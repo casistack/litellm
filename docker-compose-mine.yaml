@@ -3,6 +3,7 @@ services:
   litellm:
     build:
       context: .
+      dockerfile: Dockerfile.mine
       args:
         target: runtime
     image: ghcr.io/berriai/litellm:main-stable
