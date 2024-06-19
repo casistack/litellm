@@ -1,9 +1,9 @@
+import copy
 import sys
+from datetime import datetime
 from unittest import mock
 
 from dotenv import load_dotenv
-import copy
-from datetime import datetime
 
 load_dotenv()
 import os
@@ -12,21 +12,26 @@ sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
 import pytest
+
 import litellm
+from litellm.proxy.utils import (
+    _duration_in_seconds,
+    _extract_from_regex,
+    get_last_day_of_month,
+)
 from litellm.utils import (
-    trim_messages,
-    get_token_count,
-    get_valid_models,
     check_valid_key,
-    validate_environment,
-    function_to_dict,
-    token_counter,
     create_pretrained_tokenizer,
     create_tokenizer,
+    function_to_dict,
     get_max_tokens,
     get_supported_openai_params,
+    get_token_count,
+    get_valid_models,
+    token_counter,
+    trim_messages,
+    validate_environment,
 )
-from litellm.proxy.utils import _duration_in_seconds, _extract_from_regex
 
 # Assuming your trim_messages, shorten_message_to_fit_limit, and get_token_count functions are all in a module named 'message_utils'
 
@@ -195,7 +200,7 @@ def test_trimming_with_model_cost_max_input_tokens(model):
     )
 
 
-def test_get_valid_models():
+def test_aget_valid_models():
     old_environ = os.environ
     os.environ = {"OPENAI_API_KEY": "temp"}  # mock set only openai key in environ
 
@@ -207,6 +212,19 @@ def test_get_valid_models():
         litellm.open_ai_chat_completion_models + litellm.open_ai_text_completion_models
     )
 
+    assert valid_models == expected_models
+
+    # reset replicate env key
+    os.environ = old_environ
+
+    # GEMINI
+    expected_models = litellm.gemini_models
+    old_environ = os.environ
+    os.environ = {"GEMINI_API_KEY": "temp"}  # mock set only openai key in environ
+
+    valid_models = get_valid_models()
+
+    print(valid_models)
     assert valid_models == expected_models
 
     # reset replicate env key
@@ -405,10 +423,10 @@ def test_redact_msgs_from_logs():
 
     On the proxy some users were seeing the redaction impact client side responses
     """
+    from litellm.litellm_core_utils.litellm_logging import Logging
     from litellm.litellm_core_utils.redact_messages import (
         redact_message_input_output_from_logging,
     )
-    from litellm.utils import Logging
 
     litellm.turn_off_message_logging = True
 
@@ -467,15 +485,31 @@ def test_duration_in_seconds():
 
     now = time.time()
     current_time = datetime.fromtimestamp(now)
-    print("current_time={}".format(current_time))
-    # Calculate the first day of the next month
+
     if current_time.month == 12:
-        next_month = datetime(year=current_time.year + 1, month=1, day=1)
+        target_year = current_time.year + 1
+        target_month = 1
     else:
-        next_month = datetime(
-            year=current_time.year, month=current_time.month + 1, day=1
-        )
-    print("next_month={}".format(next_month))
+        target_year = current_time.year
+        target_month = current_time.month + 1
+
+    # Determine the day to set for next month
+    target_day = current_time.day
+    last_day_of_target_month = get_last_day_of_month(target_year, target_month)
+
+    if target_day > last_day_of_target_month:
+        target_day = last_day_of_target_month
+
+    next_month = datetime(
+        year=target_year,
+        month=target_month,
+        day=target_day,
+        hour=current_time.hour,
+        minute=current_time.minute,
+        second=current_time.second,
+        microsecond=current_time.microsecond,
+    )
+
     # Calculate the duration until the first day of the next month
     duration_until_next_month = next_month - current_time
     expected_duration = int(duration_until_next_month.total_seconds())
