@@ -10,14 +10,10 @@ services:
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:
-      - ./config:/app/config
-    #command: ["--config", "/app/config/config.yaml", "--port", "${LITELLM_PORT:-4000}", "--num_workers", "${NUM_WORKERS:-8}"]  
+      - litellm-config:/app/config
     environment:
       DATABASE_URL: "postgresql://postgres:${DB_PASSWORD:-example}@db:5432/postgres"
       STORE_MODEL_IN_DB: "${STORE_MODEL_IN_DB:-True}"
-      #LANGFUSE_HOST: "${LANGFUSE_HOST}"
-      #LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY}"
-      #LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY}"
       AZURE_API_KEY: "{AZURE_API_KEY}"
       OPENAI_API_KEY: "{OPENAI_API_KEY}"
       REPLICATE_API_KEY: "{REPLICATE_API_KEY}"
@@ -28,7 +24,6 @@ services:
     restart: unless-stopped
     depends_on:
       - db
-
   db:
     image: postgres
     restart: always
@@ -39,3 +34,9 @@ services:
       interval: 1s
       timeout: 5s
       retries: 10
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+volumes:
+  litellm-config:
+  db-data:
