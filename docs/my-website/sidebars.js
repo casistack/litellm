@@ -43,8 +43,8 @@ const sidebars = {
         "proxy/cost_tracking",
         "proxy/self_serve",
         "proxy/users",
-        "proxy/customers",
         "proxy/team_budgets",
+        "proxy/customers",
         "proxy/billing",
         "proxy/user_keys",
         "proxy/virtual_keys",
@@ -88,6 +88,7 @@ const sidebars = {
       },
       items: [
         "completion/input",
+        "completion/drop_params",
         "completion/prompt_formatting",
         "completion/output",
         "exception_mapping",

@@ -23,7 +23,7 @@ from litellm import RateLimitError, Timeout, completion, completion_cost, embedd
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.prompt_templates.factory import anthropic_messages_pt
 
-# litellm.num_retries = 3
+# litellm.num_retries=3
 litellm.cache = None
 litellm.success_callback = []
 user_message = "Write a short poem about the sky"
@@ -1426,7 +1426,7 @@ def test_hf_test_completion_tgi():
                 messages=[{"content": "Hello, how are you?", "role": "user"}],
                 max_tokens=10,
             )
-            # Add any assertions here to check the response
+            # Add any assertions-here to check the response
             print(response)
     except litellm.ServiceUnavailableError as e:
         pass

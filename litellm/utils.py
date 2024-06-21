@@ -542,6 +542,7 @@ def function_setup(
             langfuse_public_key=kwargs.pop("langfuse_public_key", None),
             langfuse_secret=kwargs.pop("langfuse_secret", None)
             or kwargs.pop("langfuse_secret_key", None),
+            langfuse_host=kwargs.pop("langfuse_host", None),
         )
         ## check if metadata is passed in
         litellm_params = {"api_base": ""}
@@ -2292,6 +2293,7 @@ def get_optional_params(
     extra_headers=None,
     api_version=None,
     drop_params=None,
+    additional_drop_params=None,
     **kwargs,
 ):
     # retrieve all parameters passed to the function
@@ -2308,7 +2310,6 @@ def get_optional_params(
             k.startswith("vertex_") and custom_llm_provider != "vertex_ai"
         ):  # allow dynamically setting vertex ai init logic
             continue
-
         passed_params[k] = v
 
     optional_params: Dict = {}
@@ -2364,7 +2365,19 @@ def get_optional_params(
         "extra_headers": None,
         "api_version": None,
         "drop_params": None,
+        "additional_drop_params": None,
     }
+
+    def _should_drop_param(k, additional_drop_params) -> bool:
+        if (
+            additional_drop_params is not None
+            and isinstance(additional_drop_params, list)
+            and k in additional_drop_params
+        ):
+            return True  # allow user to drop specific params for a model - e.g. vllm - logit bias
+
+        return False
+
     # filter out those parameters that were passed with non-default values
     non_default_params = {
         k: v
@@ -2374,8 +2387,11 @@ def get_optional_params(
             and k != "custom_llm_provider"
             and k != "api_version"
             and k != "drop_params"
+            and k != "additional_drop_params"
             and k in default_params
             and v != default_params[k]
+            and _should_drop_param(k=k, additional_drop_params=additional_drop_params)
+            is False
         )
     }
 
@@ -3810,6 +3826,12 @@ def get_supported_openai_params(
     return None
 
 
+def _count_characters(text: str) -> int:
+    # Remove white spaces and count characters
+    filtered_text = "".join(char for char in text if not char.isspace())
+    return len(filtered_text)
+
+
 def get_formatted_prompt(
     data: dict,
     call_type: Literal[
@@ -3828,9 +3850,20 @@ def get_formatted_prompt(
     """
     prompt = ""
     if call_type == "completion":
-        for m in data["messages"]:
-            if "content" in m and isinstance(m["content"], str):
-                prompt += m["content"]
+        for message in data["messages"]:
+            if message.get("content", None) is not None:
+                content = message.get("content")
+                if isinstance(content, str):
+                    prompt += message["content"]
+                elif isinstance(content, List):
+                    for c in content:
+                        if c["type"] == "text":
+                            prompt += c["text"]
+            if "tool_calls" in message:
+                for tool_call in message["tool_calls"]:
+                    if "function" in tool_call:
+                        function_arguments = tool_call["function"]["arguments"]
+                        prompt += function_arguments
     elif call_type == "text_completion":
         prompt = data["prompt"]
     elif call_type == "embedding" or call_type == "moderation":
@@ -3845,6 +3878,17 @@ def get_formatted_prompt(
         if "prompt" in data:
             prompt = data["prompt"]
     return prompt
+
+
+def get_response_string(response_obj: ModelResponse) -> str:
+    _choices: List[Choices] = response_obj.choices  # type: ignore
+
+    response_str = ""
+    for choice in _choices:
+        if choice.message.content is not None:
+            response_str += choice.message.content
+
+    return response_str
 
 
 def _is_non_openai_azure_model(model: str) -> bool:
@@ -3975,6 +4019,11 @@ def get_llm_provider(
                     or get_secret("TOGETHERAI_API_KEY")
                     or get_secret("TOGETHER_AI_TOKEN")
                 )
+            elif custom_llm_provider == "friendliai":
+                api_base = "https://inference.friendli.ai/v1"
+                dynamic_api_key = get_secret("FRIENDLIAI_API_KEY") or get_secret(
+                    "FRIENDLI_TOKEN"
+                )
             if api_base is not None and not isinstance(api_base, str):
                 raise Exception(
                     "api base needs to be a string. api_base={}".format(api_base)
@@ -4028,6 +4077,11 @@ def get_llm_provider(
                     elif endpoint == "api.deepseek.com/v1":
                         custom_llm_provider = "deepseek"
                         dynamic_api_key = get_secret("DEEPSEEK_API_KEY")
+                    elif endpoint == "inference.friendli.ai/v1":
+                        custom_llm_provider = "friendliai"
+                        dynamic_api_key = get_secret(
+                            "FRIENDLIAI_API_KEY"
+                        ) or get_secret("FRIENDLI_TOKEN")
 
                     if api_base is not None and not isinstance(api_base, str):
                         raise Exception(
@@ -4050,6 +4104,7 @@ def get_llm_provider(
         if (
             model in litellm.open_ai_chat_completion_models
             or "ft:gpt-3.5-turbo" in model
+            or "ft:gpt-4" in model  # catches ft:gpt-4-0613, ft:gpt-4o
             or model in litellm.openai_image_generation_models
         ):
             custom_llm_provider = "openai"
@@ -4392,12 +4447,21 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                     max_input_tokens=_model_info.get("max_input_tokens", None),
                     max_output_tokens=_model_info.get("max_output_tokens", None),
                     input_cost_per_token=_model_info.get("input_cost_per_token", 0),
+                    input_cost_per_character=_model_info.get(
+                        "input_cost_per_character", None
+                    ),
                     input_cost_per_token_above_128k_tokens=_model_info.get(
                         "input_cost_per_token_above_128k_tokens", None
                     ),
                     output_cost_per_token=_model_info.get("output_cost_per_token", 0),
+                    output_cost_per_character=_model_info.get(
+                        "output_cost_per_character", None
+                    ),
                     output_cost_per_token_above_128k_tokens=_model_info.get(
                         "output_cost_per_token_above_128k_tokens", None
+                    ),
+                    output_cost_per_character_above_128k_tokens=_model_info.get(
+                        "output_cost_per_character_above_128k_tokens", None
                     ),
                     litellm_provider=_model_info.get(
                         "litellm_provider", custom_llm_provider
@@ -4426,12 +4490,21 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                     max_input_tokens=_model_info.get("max_input_tokens", None),
                     max_output_tokens=_model_info.get("max_output_tokens", None),
                     input_cost_per_token=_model_info.get("input_cost_per_token", 0),
+                    input_cost_per_character=_model_info.get(
+                        "input_cost_per_character", None
+                    ),
                     input_cost_per_token_above_128k_tokens=_model_info.get(
                         "input_cost_per_token_above_128k_tokens", None
                     ),
                     output_cost_per_token=_model_info.get("output_cost_per_token", 0),
+                    output_cost_per_character=_model_info.get(
+                        "output_cost_per_character", None
+                    ),
                     output_cost_per_token_above_128k_tokens=_model_info.get(
                         "output_cost_per_token_above_128k_tokens", None
+                    ),
+                    output_cost_per_character_above_128k_tokens=_model_info.get(
+                        "output_cost_per_character_above_128k_tokens", None
                     ),
                     litellm_provider=_model_info.get(
                         "litellm_provider", custom_llm_provider
@@ -4460,12 +4533,21 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
                     max_input_tokens=_model_info.get("max_input_tokens", None),
                     max_output_tokens=_model_info.get("max_output_tokens", None),
                     input_cost_per_token=_model_info.get("input_cost_per_token", 0),
+                    input_cost_per_character=_model_info.get(
+                        "input_cost_per_character", None
+                    ),
                     input_cost_per_token_above_128k_tokens=_model_info.get(
                         "input_cost_per_token_above_128k_tokens", None
                     ),
                     output_cost_per_token=_model_info.get("output_cost_per_token", 0),
+                    output_cost_per_character=_model_info.get(
+                        "output_cost_per_character", None
+                    ),
                     output_cost_per_token_above_128k_tokens=_model_info.get(
                         "output_cost_per_token_above_128k_tokens", None
+                    ),
+                    output_cost_per_character_above_128k_tokens=_model_info.get(
+                        "output_cost_per_character_above_128k_tokens", None
                     ),
                     litellm_provider=_model_info.get(
                         "litellm_provider", custom_llm_provider
@@ -5631,7 +5713,11 @@ def exception_type(
                         + "Exception"
                     )
 
-                if "This model's maximum context length is" in error_str:
+                if (
+                    "This model's maximum context length is" in error_str
+                    or "string too long. Expected a string with maximum length"
+                    in error_str
+                ):
                     exception_mapping_worked = True
                     raise ContextWindowExceededError(
                         message=f"ContextWindowExceededError: {exception_provider} - {message}",
@@ -5650,6 +5736,14 @@ def exception_type(
                         llm_provider=custom_llm_provider,
                         model=model,
                         response=original_exception.response,
+                        litellm_debug_info=extra_information,
+                    )
+                elif "A timeout occurred" in error_str:
+                    exception_mapping_worked = True
+                    raise Timeout(
+                        message=f"{exception_provider} - {message}",
+                        model=model,
+                        llm_provider=custom_llm_provider,
                         litellm_debug_info=extra_information,
                     )
                 elif (
@@ -5676,7 +5770,15 @@ def exception_type(
                         response=original_exception.response,
                         litellm_debug_info=extra_information,
                     )
+                elif "Web server is returning an unknown error" in error_str:
+                    exception_mapping_worked = True
+                    raise litellm.InternalServerError(
+                        message=f"{exception_provider} - {message}",
+                        model=model,
+                        llm_provider=custom_llm_provider,
+                    )
                 elif "Request too large" in error_str:
+                    exception_mapping_worked = True
                     raise RateLimitError(
                         message=f"RateLimitError: {exception_provider} - {message}",
                         model=model,
@@ -6844,7 +6946,13 @@ def exception_type(
                         llm_provider="together_ai",
                         response=original_exception.response,
                     )
-
+                elif "A timeout occurred" in error_str:
+                    exception_mapping_worked = True
+                    raise Timeout(
+                        message=f"TogetherAIException - {error_str}",
+                        model=model,
+                        llm_provider="together_ai",
+                    )
                 elif (
                     "error" in error_response
                     and "API key doesn't match expected format."
@@ -7167,6 +7275,100 @@ def exception_type(
                         litellm_debug_info=extra_information,
                         request=httpx.Request(method="POST", url="https://openai.com/"),
                     )
+            if custom_llm_provider == "openrouter":
+                if hasattr(original_exception, "status_code"):
+                    exception_mapping_worked = True
+                    if original_exception.status_code == 400:
+                        exception_mapping_worked = True
+                        raise BadRequestError(
+                            message=f"{exception_provider} - {message}",
+                            llm_provider=custom_llm_provider,
+                            model=model,
+                            response=original_exception.response,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 401:
+                        exception_mapping_worked = True
+                        raise AuthenticationError(
+                            message=f"AuthenticationError: {exception_provider} - {message}",
+                            llm_provider=custom_llm_provider,
+                            model=model,
+                            response=original_exception.response,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 404:
+                        exception_mapping_worked = True
+                        raise NotFoundError(
+                            message=f"NotFoundError: {exception_provider} - {message}",
+                            model=model,
+                            llm_provider=custom_llm_provider,
+                            response=original_exception.response,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 408:
+                        exception_mapping_worked = True
+                        raise Timeout(
+                            message=f"Timeout Error: {exception_provider} - {message}",
+                            model=model,
+                            llm_provider=custom_llm_provider,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 422:
+                        exception_mapping_worked = True
+                        raise BadRequestError(
+                            message=f"BadRequestError: {exception_provider} - {message}",
+                            model=model,
+                            llm_provider=custom_llm_provider,
+                            response=original_exception.response,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 429:
+                        exception_mapping_worked = True
+                        raise RateLimitError(
+                            message=f"RateLimitError: {exception_provider} - {message}",
+                            model=model,
+                            llm_provider=custom_llm_provider,
+                            response=original_exception.response,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 503:
+                        exception_mapping_worked = True
+                        raise ServiceUnavailableError(
+                            message=f"ServiceUnavailableError: {exception_provider} - {message}",
+                            model=model,
+                            llm_provider=custom_llm_provider,
+                            response=original_exception.response,
+                            litellm_debug_info=extra_information,
+                        )
+                    elif original_exception.status_code == 504:  # gateway timeout error
+                        exception_mapping_worked = True
+                        raise Timeout(
+                            message=f"Timeout Error: {exception_provider} - {message}",
+                            model=model,
+                            llm_provider=custom_llm_provider,
+                            litellm_debug_info=extra_information,
+                        )
+                    else:
+                        exception_mapping_worked = True
+                        raise APIError(
+                            status_code=original_exception.status_code,
+                            message=f"APIError: {exception_provider} - {message}",
+                            llm_provider=custom_llm_provider,
+                            model=model,
+                            request=original_exception.request,
+                            litellm_debug_info=extra_information,
+                        )
+                else:
+                    # if no status code then it is an APIConnectionError: https://github.com/openai/openai-python#handling-errors
+                    raise APIConnectionError(
+                        message=f"APIConnectionError: {exception_provider} - {message}",
+                        llm_provider=custom_llm_provider,
+                        model=model,
+                        litellm_debug_info=extra_information,
+                        request=httpx.Request(
+                            method="POST", url="https://api.openai.com/v1/"
+                        ),
+                    )
         if (
             "BadRequestError.__init__() missing 1 required positional argument: 'param'"
             in str(original_exception)
@@ -7233,40 +7435,6 @@ def exception_type(
             )
 
 
-def get_or_generate_uuid():
-    temp_dir = os.path.join(os.path.abspath(os.sep), "tmp")
-    uuid_file = os.path.join(temp_dir, "litellm_uuid.txt")
-    try:
-        # Try to open the file and load the UUID
-        with open(uuid_file, "r") as file:
-            uuid_value = file.read()
-            if uuid_value:
-                uuid_value = uuid_value.strip()
-            else:
-                raise FileNotFoundError
-
-    except FileNotFoundError:
-        # Generate a new UUID if the file doesn't exist or is empty
-        try:
-            new_uuid = uuid.uuid4()
-            uuid_value = str(new_uuid)
-            with open(uuid_file, "w") as file:
-                file.write(uuid_value)
-        except:  # if writing to tmp/litellm_uuid.txt then retry writing to litellm_uuid.txt
-            try:
-                new_uuid = uuid.uuid4()
-                uuid_value = str(new_uuid)
-                with open("litellm_uuid.txt", "w") as file:
-                    file.write(uuid_value)
-            except:  # if this 3rd attempt fails just pass
-                # Good first issue for someone to improve this function :)
-                return
-    except:
-        # [Non-Blocking Error]
-        return
-    return uuid_value
-
-
 ######### Secret Manager ############################
 # checks if user has passed in a secret manager client
 # if passed in then checks the secret there
@@ -7283,7 +7451,6 @@ def get_secret(
 ):
     key_management_system = litellm._key_management_system
     key_management_settings = litellm._key_management_settings
-    args = locals()
 
     if secret_name.startswith("os.environ/"):
         secret_name = secret_name.replace("os.environ/", "")
@@ -7417,19 +7584,24 @@ def get_secret(
                     """
                     encrypted_value = os.getenv(secret_name, None)
                     if encrypted_value is None:
-                        raise Exception("encrypted value for AWS KMS cannot be None.")
+                        raise Exception(
+                            "AWS KMS - Encrypted Value of Key={} is None".format(
+                                secret_name
+                            )
+                        )
                     # Decode the base64 encoded ciphertext
                     ciphertext_blob = base64.b64decode(encrypted_value)
 
                     # Set up the parameters for the decrypt call
                     params = {"CiphertextBlob": ciphertext_blob}
-
                     # Perform the decryption
                     response = client.decrypt(**params)
 
                     # Extract and decode the plaintext
                     plaintext = response["Plaintext"]
                     secret = plaintext.decode("utf-8")
+                    if isinstance(secret, str):
+                        secret = secret.strip()
                 elif key_manager == KeyManagementSystem.AWS_SECRET_MANAGER.value:
                     try:
                         get_secret_value_response = client.get_secret_value(
@@ -7456,7 +7628,7 @@ def get_secret(
                     secret = client.get_secret(secret_name).secret_value
             except Exception as e:  # check if it's in os.environ
                 verbose_logger.error(
-                    f"An exception occurred - {str(e)}\n\n{traceback.format_exc()}"
+                    f"Defaulting to os.environ value for key={secret_name}. An exception occurred - {str(e)}.\n\n{traceback.format_exc()}"
                 )
                 secret = os.getenv(secret_name)
             try:

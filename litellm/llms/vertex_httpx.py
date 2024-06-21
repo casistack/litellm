@@ -551,6 +551,7 @@ class VertexLLM(BaseLLM):
         vertex_credentials: Optional[str],
         stream: Optional[bool],
         custom_llm_provider: Literal["vertex_ai", "vertex_ai_beta", "gemini"],
+        api_base: Optional[str],
     ) -> Tuple[Optional[str], str]:
         """
         Internal function. Returns the token and url for the call.
@@ -583,6 +584,17 @@ class VertexLLM(BaseLLM):
             if stream is True:
                 endpoint = "streamGenerateContent"
             url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:{endpoint}"
+
+        if (
+            api_base is not None
+        ):  # for cloudflare ai gateway - https://github.com/BerriAI/litellm/issues/4317
+            if custom_llm_provider == "gemini":
+                url = "{}/{}".format(api_base, endpoint)
+                auth_header = (
+                    gemini_api_key  # cloudflare expects api key as bearer token
+                )
+            else:
+                url = "{}:{}".format(api_base, endpoint)
 
         return auth_header, url
 
@@ -694,6 +706,7 @@ class VertexLLM(BaseLLM):
         logger_fn=None,
         extra_headers: Optional[dict] = None,
         client: Optional[Union[AsyncHTTPHandler, HTTPHandler]] = None,
+        api_base: Optional[str] = None,
     ) -> Union[ModelResponse, CustomStreamWrapper]:
         stream: Optional[bool] = optional_params.pop("stream", None)  # type: ignore
 
@@ -705,12 +718,16 @@ class VertexLLM(BaseLLM):
             vertex_credentials=vertex_credentials,
             stream=stream,
             custom_llm_provider=custom_llm_provider,
+            api_base=api_base,
         )
 
         ## TRANSFORMATION ##
         try:
+            _custom_llm_provider = custom_llm_provider
+            if custom_llm_provider == "vertex_ai_beta":
+                _custom_llm_provider = "vertex_ai"
             supports_system_message = litellm.supports_system_messages(
-                model=model, custom_llm_provider=custom_llm_provider
+                model=model, custom_llm_provider=_custom_llm_provider
             )
         except Exception as e:
             verbose_logger.error(
@@ -758,6 +775,8 @@ class VertexLLM(BaseLLM):
         }
         if auth_header is not None:
             headers["Authorization"] = f"Bearer {auth_header}"
+        if extra_headers is not None:
+            headers.update(extra_headers)
 
         ## LOGGING
         logging_obj.pre_call(

@@ -42,7 +42,6 @@ def get_vertex_ai_creds_json() -> dict:
     print("loading vertex ai credentials")
     filepath = os.path.dirname(os.path.abspath(__file__))
     vertex_key_path = filepath + "/vertex_key.json"
-
     # Read the existing content of the file or create an empty dictionary
     try:
         with open(vertex_key_path, "r") as file:
@@ -529,6 +528,7 @@ async def test_gemini_pro_vision(provider, sync_mode):
             resp = litellm.completion(
                 model="{}/gemini-1.5-flash-preview-0514".format(provider),
                 messages=[
+                    {"role": "system", "content": "Be a good bot"},
                     {
                         "role": "user",
                         "content": [
@@ -540,13 +540,14 @@ async def test_gemini_pro_vision(provider, sync_mode):
                                 },
                             },
                         ],
-                    }
+                    },
                 ],
             )
         else:
             resp = await litellm.acompletion(
                 model="{}/gemini-1.5-flash-preview-0514".format(provider),
                 messages=[
+                    {"role": "system", "content": "Be a good bot"},
                     {
                         "role": "user",
                         "content": [
@@ -558,7 +559,7 @@ async def test_gemini_pro_vision(provider, sync_mode):
                                 },
                             },
                         ],
-                    }
+                    },
                 ],
             )
         print(resp)
@@ -567,7 +568,8 @@ async def test_gemini_pro_vision(provider, sync_mode):
 
         # DO Not DELETE this ASSERT
         # Google counts the prompt tokens for us, we should ensure we use the tokens from the orignal response
-        assert prompt_tokens == 263  # the gemini api returns 263 to us
+        assert prompt_tokens == 267  # the gemini api returns 267 to us
+
     except litellm.RateLimitError as e:
         pass
     except Exception as e:
@@ -849,6 +851,40 @@ Using this JSON schema:
             pass
 
         mock_call.assert_called_once()
+
+
+@pytest.mark.parametrize("provider", ["vertex_ai_beta"])  # "vertex_ai",
+@pytest.mark.asyncio
+async def test_gemini_pro_httpx_custom_api_base(provider):
+    load_vertex_ai_credentials()
+    litellm.set_verbose = True
+    messages = [
+        {
+            "role": "user",
+            "content": "Hello world",
+        }
+    ]
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    client = HTTPHandler()
+
+    with patch.object(client, "post", new=MagicMock()) as mock_call:
+        try:
+            response = completion(
+                model="vertex_ai_beta/gemini-1.5-flash",
+                messages=messages,
+                response_format={"type": "json_object"},
+                client=client,
+                api_base="my-custom-api-base",
+                extra_headers={"hello": "world"},
+            )
+        except Exception as e:
+            pass
+
+        mock_call.assert_called_once()
+
+        assert "my-custom-api-base:generateContent" == mock_call.call_args.kwargs["url"]
+        assert "hello" in mock_call.call_args.kwargs["headers"]
 
 
 @pytest.mark.skip(reason="exhausted vertex quota. need to refactor to mock the call")
@@ -1161,6 +1197,7 @@ def test_gemini_pro_vision_async():
             resp = await litellm.acompletion(
                 model="vertex_ai/gemini-pro-vision",
                 messages=[
+                    {"role": "system", "content": ""},
                     {
                         "role": "user",
                         "content": [
@@ -1172,7 +1209,7 @@ def test_gemini_pro_vision_async():
                                 },
                             },
                         ],
-                    }
+                    },
                 ],
             )
             print("async response gemini pro vision")

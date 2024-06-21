@@ -69,6 +69,7 @@ from litellm.types.router import (
     AlertingConfig,
     AllowedFailsPolicy,
     AssistantsTypedDict,
+    CustomRoutingStrategyBase,
     Deployment,
     DeploymentTypedDict,
     LiteLLM_Params,
@@ -2086,7 +2087,7 @@ class Router:
             "content_policy_fallbacks", self.content_policy_fallbacks
         )
         try:
-            if mock_testing_fallbacks is not None and mock_testing_fallbacks == True:
+            if mock_testing_fallbacks is not None and mock_testing_fallbacks is True:
                 raise Exception(
                     f"This is a mock exception for model={model_group}, to trigger a fallback. Fallbacks={fallbacks}"
                 )
@@ -4294,6 +4295,15 @@ class Router:
             raise ValueError(
                 f"LiteLLM Router: Trying to call specific deployment, but Model:{model} does not exist in Model List: {self.model_list}"
             )
+        elif model in self.get_model_ids():
+            deployment = self.get_model_info(id=model)
+            if deployment is not None:
+                deployment_model = deployment.get("litellm_params", {}).get("model")
+                return deployment_model, deployment
+            raise ValueError(
+                f"LiteLLM Router: Trying to call specific deployment, but Model ID :{model} does not exist in \
+                    Model ID List: {self.get_model_ids}"
+            )
 
         if model in self.model_group_alias:
             verbose_router_logger.debug(
@@ -4813,6 +4823,29 @@ class Router:
                 # )
         except Exception as e:
             pass
+
+    def set_custom_routing_strategy(
+        self, CustomRoutingStrategy: CustomRoutingStrategyBase
+    ):
+        """
+        Sets get_available_deployment and async_get_available_deployment on an instanced of litellm.Router
+
+        Use this to set your custom routing strategy
+
+        Args:
+            CustomRoutingStrategy: litellm.router.CustomRoutingStrategyBase
+        """
+
+        setattr(
+            self,
+            "get_available_deployment",
+            CustomRoutingStrategy.get_available_deployment,
+        )
+        setattr(
+            self,
+            "async_get_available_deployment",
+            CustomRoutingStrategy.async_get_available_deployment,
+        )
 
     def flush_cache(self):
         litellm.cache = None

@@ -1079,92 +1079,6 @@ def completion(
                     },
                 )
         elif (
-            model in litellm.open_ai_chat_completion_models
-            or custom_llm_provider == "custom_openai"
-            or custom_llm_provider == "deepinfra"
-            or custom_llm_provider == "perplexity"
-            or custom_llm_provider == "groq"
-            or custom_llm_provider == "codestral"
-            or custom_llm_provider == "deepseek"
-            or custom_llm_provider == "anyscale"
-            or custom_llm_provider == "mistral"
-            or custom_llm_provider == "openai"
-            or custom_llm_provider == "together_ai"
-            or custom_llm_provider in litellm.openai_compatible_providers
-            or "ft:gpt-3.5-turbo" in model  # finetune gpt-3.5-turbo
-        ):  # allow user to make an openai call with a custom base
-            # note: if a user sets a custom base - we should ensure this works
-            # allow for the setting of dynamic and stateful api-bases
-            api_base = (
-                api_base  # for deepinfra/perplexity/anyscale/groq we check in get_llm_provider and pass in the api base from there
-                or litellm.api_base
-                or get_secret("OPENAI_API_BASE")
-                or "https://api.openai.com/v1"
-            )
-            openai.organization = (
-                organization
-                or litellm.organization
-                or get_secret("OPENAI_ORGANIZATION")
-                or None  # default - https://github.com/openai/openai-python/blob/284c1799070c723c6a553337134148a7ab088dd8/openai/util.py#L105
-            )
-            # set API KEY
-            api_key = (
-                api_key
-                or litellm.api_key  # for deepinfra/perplexity/anyscale we check in get_llm_provider and pass in the api key from there
-                or litellm.openai_key
-                or get_secret("OPENAI_API_KEY")
-            )
-
-            headers = headers or litellm.headers
-
-            ## LOAD CONFIG - if set
-            config = litellm.OpenAIConfig.get_config()
-            for k, v in config.items():
-                if (
-                    k not in optional_params
-                ):  # completion(top_k=3) > openai_config(top_k=3) <- allows for dynamic variables to be passed in
-                    optional_params[k] = v
-
-            ## COMPLETION CALL
-            try:
-                response = openai_chat_completions.completion(
-                    model=model,
-                    messages=messages,
-                    headers=headers,
-                    model_response=model_response,
-                    print_verbose=print_verbose,
-                    api_key=api_key,
-                    api_base=api_base,
-                    acompletion=acompletion,
-                    logging_obj=logging,
-                    optional_params=optional_params,
-                    litellm_params=litellm_params,
-                    logger_fn=logger_fn,
-                    timeout=timeout,  # type: ignore
-                    custom_prompt_dict=custom_prompt_dict,
-                    client=client,  # pass AsyncOpenAI, OpenAI client
-                    organization=organization,
-                    custom_llm_provider=custom_llm_provider,
-                )
-            except Exception as e:
-                ## LOGGING - log the original exception returned
-                logging.post_call(
-                    input=messages,
-                    api_key=api_key,
-                    original_response=str(e),
-                    additional_args={"headers": headers},
-                )
-                raise e
-
-            if optional_params.get("stream", False):
-                ## LOGGING
-                logging.post_call(
-                    input=messages,
-                    api_key=api_key,
-                    original_response=response,
-                    additional_args={"headers": headers},
-                )
-        elif (
             custom_llm_provider == "text-completion-openai"
             or "ft:babbage-002" in model
             or "ft:davinci-002" in model  # support for finetuned completion models
@@ -1247,6 +1161,93 @@ def completion(
                     additional_args={"headers": headers},
                 )
             response = _response
+
+        elif (
+            model in litellm.open_ai_chat_completion_models
+            or custom_llm_provider == "custom_openai"
+            or custom_llm_provider == "deepinfra"
+            or custom_llm_provider == "perplexity"
+            or custom_llm_provider == "groq"
+            or custom_llm_provider == "codestral"
+            or custom_llm_provider == "deepseek"
+            or custom_llm_provider == "anyscale"
+            or custom_llm_provider == "mistral"
+            or custom_llm_provider == "openai"
+            or custom_llm_provider == "together_ai"
+            or custom_llm_provider in litellm.openai_compatible_providers
+            or "ft:gpt-3.5-turbo" in model  # finetune gpt-3.5-turbo
+        ):  # allow user to make an openai call with a custom base
+            # note: if a user sets a custom base - we should ensure this works
+            # allow for the setting of dynamic and stateful api-bases
+            api_base = (
+                api_base  # for deepinfra/perplexity/anyscale/groq/friendliai we check in get_llm_provider and pass in the api base from there
+                or litellm.api_base
+                or get_secret("OPENAI_API_BASE")
+                or "https://api.openai.com/v1"
+            )
+            openai.organization = (
+                organization
+                or litellm.organization
+                or get_secret("OPENAI_ORGANIZATION")
+                or None  # default - https://github.com/openai/openai-python/blob/284c1799070c723c6a553337134148a7ab088dd8/openai/util.py#L105
+            )
+            # set API KEY
+            api_key = (
+                api_key
+                or litellm.api_key  # for deepinfra/perplexity/anyscale/friendliai we check in get_llm_provider and pass in the api key from there
+                or litellm.openai_key
+                or get_secret("OPENAI_API_KEY")
+            )
+
+            headers = headers or litellm.headers
+
+            ## LOAD CONFIG - if set
+            config = litellm.OpenAIConfig.get_config()
+            for k, v in config.items():
+                if (
+                    k not in optional_params
+                ):  # completion(top_k=3) > openai_config(top_k=3) <- allows for dynamic variables to be passed in
+                    optional_params[k] = v
+
+            ## COMPLETION CALL
+            try:
+                response = openai_chat_completions.completion(
+                    model=model,
+                    messages=messages,
+                    headers=headers,
+                    model_response=model_response,
+                    print_verbose=print_verbose,
+                    api_key=api_key,
+                    api_base=api_base,
+                    acompletion=acompletion,
+                    logging_obj=logging,
+                    optional_params=optional_params,
+                    litellm_params=litellm_params,
+                    logger_fn=logger_fn,
+                    timeout=timeout,  # type: ignore
+                    custom_prompt_dict=custom_prompt_dict,
+                    client=client,  # pass AsyncOpenAI, OpenAI client
+                    organization=organization,
+                    custom_llm_provider=custom_llm_provider,
+                )
+            except Exception as e:
+                ## LOGGING - log the original exception returned
+                logging.post_call(
+                    input=messages,
+                    api_key=api_key,
+                    original_response=str(e),
+                    additional_args={"headers": headers},
+                )
+                raise e
+
+            if optional_params.get("stream", False):
+                ## LOGGING
+                logging.post_call(
+                    input=messages,
+                    api_key=api_key,
+                    original_response=response,
+                    additional_args={"headers": headers},
+                )
         elif (
             "replicate" in model
             or custom_llm_provider == "replicate"
@@ -1929,6 +1930,8 @@ def completion(
                 timeout=timeout,
                 custom_llm_provider=custom_llm_provider,
                 client=client,
+                api_base=api_base,
+                extra_headers=extra_headers,
             )
 
         elif custom_llm_provider == "vertex_ai":
@@ -3780,6 +3783,12 @@ def text_completion(
         )
 
     kwargs.pop("prompt", None)
+
+    if model is not None and model.startswith(
+        "openai/"
+    ):  # for openai compatible endpoints - e.g. vllm, call the native /v1/completions endpoint for text completion calls
+        model = model.replace("openai/", "text-completion-openai/")
+
     kwargs["text_completion"] = True
     response = completion(
         model=model,
@@ -3942,6 +3951,7 @@ def image_generation(
         proxy_server_request = kwargs.get("proxy_server_request", None)
         model_info = kwargs.get("model_info", None)
         metadata = kwargs.get("metadata", {})
+        client = kwargs.get("client", None)
 
         model_response = litellm.utils.ImageResponse()
         if model is not None or custom_llm_provider is not None:
@@ -4080,6 +4090,7 @@ def image_generation(
                 model_response=model_response,
                 api_version=api_version,
                 aimg_generation=aimg_generation,
+                client=client,
             )
         elif custom_llm_provider == "openai":
             model_response = openai_chat_completions.image_generation(
@@ -4092,6 +4103,7 @@ def image_generation(
                 optional_params=optional_params,
                 model_response=model_response,
                 aimg_generation=aimg_generation,
+                client=client,
             )
         elif custom_llm_provider == "bedrock":
             if model is None:
@@ -4389,7 +4401,7 @@ def speech(
     response: Optional[HttpxBinaryResponseContent] = None
     if custom_llm_provider == "openai":
         api_base = (
-            api_base  # for deepinfra/perplexity/anyscale/groq we check in get_llm_provider and pass in the api base from there
+            api_base  # for deepinfra/perplexity/anyscale/groq/friendliai we check in get_llm_provider and pass in the api base from there
             or litellm.api_base
             or get_secret("OPENAI_API_BASE")
             or "https://api.openai.com/v1"
