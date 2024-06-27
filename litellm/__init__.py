@@ -37,7 +37,9 @@ input_callback: List[Union[str, Callable]] = []
 success_callback: List[Union[str, Callable]] = []
 failure_callback: List[Union[str, Callable]] = []
 service_callback: List[Union[str, Callable]] = []
-_custom_logger_compatible_callbacks_literal = Literal["lago", "openmeter", "logfire"]
+_custom_logger_compatible_callbacks_literal = Literal[
+    "lago", "openmeter", "logfire", "dynamic_rate_limiter"
+]
 callbacks: List[Union[Callable, _custom_logger_compatible_callbacks_literal]] = []
 _langfuse_default_tags: Optional[
     List[
@@ -399,6 +401,7 @@ openai_compatible_endpoints: List = [
     "codestral.mistral.ai/v1/chat/completions",
     "codestral.mistral.ai/v1/fim/completions",
     "api.groq.com/openai/v1",
+    "https://integrate.api.nvidia.com/v1",
     "api.deepseek.com/v1",
     "api.together.xyz/v1",
     "inference.friendli.ai/v1",
@@ -409,6 +412,8 @@ openai_compatible_providers: List = [
     "anyscale",
     "mistral",
     "groq",
+    "nvidia_nim",
+    "volcengine",
     "codestral",
     "deepseek",
     "deepinfra",
@@ -638,6 +643,8 @@ provider_list: List = [
     "anyscale",
     "mistral",
     "groq",
+    "nvidia_nim",
+    "volcengine",
     "codestral",
     "text-completion-codestral",
     "deepseek",
@@ -735,6 +742,7 @@ from .utils import (
     client,
     exception_type,
     get_optional_params,
+    get_response_string,
     modify_integration,
     token_counter,
     create_pretrained_tokenizer,
@@ -783,7 +791,7 @@ from .llms.gemini import GeminiConfig
 from .llms.nlp_cloud import NLPCloudConfig
 from .llms.aleph_alpha import AlephAlphaConfig
 from .llms.petals import PetalsConfig
-from .llms.vertex_httpx import VertexGeminiConfig
+from .llms.vertex_httpx import VertexGeminiConfig, GoogleAIStudioGeminiConfig
 from .llms.vertex_ai import VertexAIConfig, VertexAITextEmbeddingConfig
 from .llms.vertex_ai_anthropic import VertexAIAnthropicConfig
 from .llms.sagemaker import SagemakerConfig
@@ -810,6 +818,9 @@ from .llms.openai import (
     DeepInfraConfig,
     AzureAIStudioConfig,
 )
+from .llms.nvidia_nim import NvidiaNimConfig
+from .llms.fireworks_ai import FireworksAIConfig
+from .llms.volcengine import VolcEngineConfig
 from .llms.text_completion_codestral import MistralTextCompletionConfig
 from .llms.azure import (
     AzureOpenAIConfig,

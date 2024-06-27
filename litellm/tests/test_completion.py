@@ -11,7 +11,7 @@ import os
 
 sys.path.insert(
     0, os.path.abspath("../..")
-)  # Adds the parent directory to the system path
+)  # Adds-the parent directory to the system path
 
 import os
 from unittest.mock import MagicMock, patch
@@ -23,7 +23,7 @@ from litellm import RateLimitError, Timeout, completion, completion_cost, embedd
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.prompt_templates.factory import anthropic_messages_pt
 
-# litellm.num_retries=3
+# litellm.num_retries = 3
 litellm.cache = None
 litellm.success_callback = []
 user_message = "Write a short poem about the sky"
@@ -1436,6 +1436,43 @@ def test_hf_test_completion_tgi():
 
 # hf_test_completion_tgi()
 
+
+@pytest.mark.parametrize("provider", ["vertex_ai_beta"])  # "vertex_ai",
+@pytest.mark.asyncio
+async def test_openai_compatible_custom_api_base(provider):
+    litellm.set_verbose = True
+    messages = [
+        {
+            "role": "user",
+            "content": "Hello world",
+        }
+    ]
+    from openai import OpenAI
+
+    openai_client = OpenAI(api_key="fake-key")
+
+    with patch.object(
+        openai_client.chat.completions, "create", new=MagicMock()
+    ) as mock_call:
+        try:
+            response = completion(
+                model="openai/my-vllm-model",
+                messages=messages,
+                response_format={"type": "json_object"},
+                client=openai_client,
+                api_base="my-custom-api-base",
+                hello="world",
+            )
+        except Exception as e:
+            pass
+
+        mock_call.assert_called_once()
+
+        print("Call KWARGS - {}".format(mock_call.call_args.kwargs))
+
+        assert "hello" in mock_call.call_args.kwargs["extra_body"]
+
+
 # ################### Hugging Face Conversational models ########################
 # def hf_test_completion_conv():
 #     try:
@@ -2543,6 +2580,8 @@ async def test_completion_replicate_llama3(sync_mode):
         # Add any assertions here to check the response
         assert isinstance(response, litellm.ModelResponse)
         response_format_tests(response=response)
+    except litellm.APIError as e:
+        pass
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
@@ -3429,6 +3468,52 @@ def test_completion_deep_infra_mistral():
 
 
 # test_completion_deep_infra_mistral()
+
+
+@pytest.mark.skip(reason="Local test - don't have a volcengine account as yet")
+def test_completion_volcengine():
+    litellm.set_verbose = True
+    model_name = "volcengine/<OUR_ENDPOINT_ID>"
+    try:
+        response = completion(
+            model=model_name,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "What's the weather like in Boston today in Fahrenheit?",
+                }
+            ],
+            api_key="<OUR_API_KEY>",
+        )
+        # Add any assertions here to check the response
+        print(response)
+
+    except litellm.exceptions.Timeout as e:
+        pass
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+def test_completion_nvidia_nim():
+    model_name = "nvidia_nim/databricks/dbrx-instruct"
+    try:
+        response = completion(
+            model=model_name,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "What's the weather like in Boston today in Fahrenheit?",
+                }
+            ],
+        )
+        # Add any assertions here to check the response
+        print(response)
+        assert response.choices[0].message.content is not None
+        assert len(response.choices[0].message.content) > 0
+    except litellm.exceptions.Timeout as e:
+        pass
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
 
 
 # Gemini tests

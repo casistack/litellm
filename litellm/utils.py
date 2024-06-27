@@ -340,14 +340,15 @@ def function_setup(
         )
     try:
         global callback_list, add_breadcrumb, user_logger_fn, Logging
+
         function_id = kwargs["id"] if "id" in kwargs else None
 
         if len(litellm.callbacks) > 0:
             for callback in litellm.callbacks:
                 # check if callback is a string - e.g. "lago", "openmeter"
                 if isinstance(callback, str):
-                    callback = litellm.litellm_core_utils.litellm_logging._init_custom_logger_compatible_class(
-                        callback
+                    callback = litellm.litellm_core_utils.litellm_logging._init_custom_logger_compatible_class(  # type: ignore
+                        callback, internal_usage_cache=None, llm_router=None
                     )
                     if any(
                         isinstance(cb, type(callback))
@@ -2016,6 +2017,7 @@ def get_litellm_params(
     input_cost_per_token=None,
     output_cost_per_token=None,
     output_cost_per_second=None,
+    cooldown_time=None,
 ):
     litellm_params = {
         "acompletion": acompletion,
@@ -2038,6 +2040,7 @@ def get_litellm_params(
         "input_cost_per_second": input_cost_per_second,
         "output_cost_per_token": output_cost_per_token,
         "output_cost_per_second": output_cost_per_second,
+        "cooldown_time": cooldown_time,
     }
 
     return litellm_params
@@ -2409,6 +2412,8 @@ def get_optional_params(
             and custom_llm_provider != "anyscale"
             and custom_llm_provider != "together_ai"
             and custom_llm_provider != "groq"
+            and custom_llm_provider != "nvidia_nim"
+            and custom_llm_provider != "volcengine"
             and custom_llm_provider != "deepseek"
             and custom_llm_provider != "codestral"
             and custom_llm_provider != "mistral"
@@ -2607,7 +2612,15 @@ def get_optional_params(
             optional_params["top_p"] = top_p
         if stop is not None:
             optional_params["stop_sequences"] = stop
-    elif custom_llm_provider == "huggingface" or custom_llm_provider == "predibase":
+    elif custom_llm_provider == "predibase":
+        supported_params = get_supported_openai_params(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+        _check_valid_arg(supported_params=supported_params)
+        optional_params = litellm.PredibaseConfig().map_openai_params(
+            non_default_params=non_default_params, optional_params=optional_params
+        )
+    elif custom_llm_provider == "huggingface":
         ## check if unsupported param passed in
         supported_params = get_supported_openai_params(
             model=model, custom_llm_provider=custom_llm_provider
@@ -2709,6 +2722,16 @@ def get_optional_params(
 
         print_verbose(
             f"(end) INSIDE THE VERTEX AI OPTIONAL PARAM BLOCK - optional_params: {optional_params}"
+        )
+    elif custom_llm_provider == "gemini":
+        supported_params = get_supported_openai_params(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+        _check_valid_arg(supported_params=supported_params)
+        optional_params = litellm.GoogleAIStudioGeminiConfig().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
         )
     elif custom_llm_provider == "vertex_ai_beta" or custom_llm_provider == "gemini":
         supported_params = get_supported_openai_params(
@@ -3049,6 +3072,35 @@ def get_optional_params(
         optional_params = litellm.DatabricksConfig().map_openai_params(
             non_default_params=non_default_params, optional_params=optional_params
         )
+    elif custom_llm_provider == "nvidia_nim":
+        supported_params = get_supported_openai_params(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+        _check_valid_arg(supported_params=supported_params)
+        optional_params = litellm.NvidiaNimConfig().map_openai_params(
+            non_default_params=non_default_params, optional_params=optional_params
+        )
+    elif custom_llm_provider == "fireworks_ai":
+        supported_params = get_supported_openai_params(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+        _check_valid_arg(supported_params=supported_params)
+        optional_params = litellm.FireworksAIConfig().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+        )
+    elif custom_llm_provider == "volcengine":
+        supported_params = get_supported_openai_params(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+        _check_valid_arg(supported_params=supported_params)
+        optional_params = litellm.VolcEngineConfig().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+        )
+
     elif custom_llm_provider == "groq":
         supported_params = get_supported_openai_params(
             model=model, custom_llm_provider=custom_llm_provider
@@ -3265,7 +3317,11 @@ def get_optional_params(
             optional_params["top_logprobs"] = top_logprobs
         if extra_headers is not None:
             optional_params["extra_headers"] = extra_headers
-    if custom_llm_provider in ["openai", "azure"] + litellm.openai_compatible_providers:
+    if (
+        custom_llm_provider
+        in ["openai", "azure", "text-completion-openai"]
+        + litellm.openai_compatible_providers
+    ):
         # for openai, azure we should pass the extra/passed params within `extra_body` https://github.com/openai/openai-python/blob/ac33853ba10d13ac149b1fa3ca6dba7d613065c9/src/openai/resources/models.py#L46
         extra_body = passed_params.pop("extra_body", {})
         for k in passed_params.keys():
@@ -3611,6 +3667,12 @@ def get_supported_openai_params(
         return litellm.OllamaChatConfig().get_supported_openai_params()
     elif custom_llm_provider == "anthropic":
         return litellm.AnthropicConfig().get_supported_openai_params()
+    elif custom_llm_provider == "fireworks_ai":
+        return litellm.FireworksAIConfig().get_supported_openai_params()
+    elif custom_llm_provider == "nvidia_nim":
+        return litellm.NvidiaNimConfig().get_supported_openai_params()
+    elif custom_llm_provider == "volcengine":
+        return litellm.VolcEngineConfig().get_supported_openai_params(model=model)
     elif custom_llm_provider == "groq":
         return [
             "temperature",
@@ -3622,6 +3684,8 @@ def get_supported_openai_params(
             "tool_choice",
             "response_format",
             "seed",
+            "extra_headers",
+            "extra_body",
         ]
     elif custom_llm_provider == "deepseek":
         return [
@@ -3742,7 +3806,7 @@ def get_supported_openai_params(
         elif request_type == "embeddings":
             return litellm.DatabricksEmbeddingConfig().get_supported_openai_params()
     elif custom_llm_provider == "palm" or custom_llm_provider == "gemini":
-        return litellm.VertexAIConfig().get_supported_openai_params()
+        return litellm.GoogleAIStudioGeminiConfig().get_supported_openai_params()
     elif custom_llm_provider == "vertex_ai":
         if request_type == "chat_completion":
             return litellm.VertexAIConfig().get_supported_openai_params()
@@ -3881,12 +3945,16 @@ def get_formatted_prompt(
 
 
 def get_response_string(response_obj: ModelResponse) -> str:
-    _choices: List[Choices] = response_obj.choices  # type: ignore
+    _choices: List[Union[Choices, StreamingChoices]] = response_obj.choices
 
     response_str = ""
     for choice in _choices:
-        if choice.message.content is not None:
-            response_str += choice.message.content
+        if isinstance(choice, Choices):
+            if choice.message.content is not None:
+                response_str += choice.message.content
+        elif isinstance(choice, StreamingChoices):
+            if choice.delta.content is not None:
+                response_str += choice.delta.content
 
     return response_str
 
@@ -3967,6 +4035,14 @@ def get_llm_provider(
                 # groq is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.groq.com/openai/v1
                 api_base = "https://api.groq.com/openai/v1"
                 dynamic_api_key = get_secret("GROQ_API_KEY")
+            elif custom_llm_provider == "nvidia_nim":
+                # nvidia_nim is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.endpoints.anyscale.com/v1
+                api_base = "https://integrate.api.nvidia.com/v1"
+                dynamic_api_key = get_secret("NVIDIA_NIM_API_KEY")
+            elif custom_llm_provider == "volcengine":
+                # volcengine is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.endpoints.anyscale.com/v1
+                api_base = "https://ark.cn-beijing.volces.com/api/v3"
+                dynamic_api_key = get_secret("VOLCENGINE_API_KEY")
             elif custom_llm_provider == "codestral":
                 # codestral is openai compatible, we just need to set this to custom_openai and have the api_base be https://codestral.mistral.ai/v1
                 api_base = "https://codestral.mistral.ai/v1"
@@ -4068,6 +4144,9 @@ def get_llm_provider(
                     elif endpoint == "api.groq.com/openai/v1":
                         custom_llm_provider = "groq"
                         dynamic_api_key = get_secret("GROQ_API_KEY")
+                    elif endpoint == "https://integrate.api.nvidia.com/v1":
+                        custom_llm_provider = "nvidia_nim"
+                        dynamic_api_key = get_secret("NVIDIA_NIM_API_KEY")
                     elif endpoint == "https://codestral.mistral.ai/v1":
                         custom_llm_provider = "codestral"
                         dynamic_api_key = get_secret("CODESTRAL_API_KEY")
@@ -4881,6 +4960,16 @@ def validate_environment(model: Optional[str] = None) -> dict:
                 keys_in_environment = True
             else:
                 missing_keys.append("GROQ_API_KEY")
+        elif custom_llm_provider == "nvidia_nim":
+            if "NVIDIA_NIM_API_KEY" in os.environ:
+                keys_in_environment = True
+            else:
+                missing_keys.append("NVIDIA_NIM_API_KEY")
+        elif custom_llm_provider == "volcengine":
+            if "VOLCENGINE_API_KEY" in os.environ:
+                keys_in_environment = True
+            else:
+                missing_keys.append("VOLCENGINE_API_KEY")
         elif (
             custom_llm_provider == "codestral"
             or custom_llm_provider == "text-completion-codestral"
@@ -5895,6 +5984,7 @@ def exception_type(
                         )
                 else:
                     # if no status code then it is an APIConnectionError: https://github.com/openai/openai-python#handling-errors
+                    # exception_mapping_worked = True
                     raise APIConnectionError(
                         message=f"APIConnectionError: {exception_provider} - {message}",
                         llm_provider=custom_llm_provider,
@@ -5908,21 +5998,28 @@ def exception_type(
                 if "prompt is too long" in error_str or "prompt: length" in error_str:
                     exception_mapping_worked = True
                     raise ContextWindowExceededError(
-                        message=error_str,
+                        message="AnthropicError - {}".format(error_str),
                         model=model,
                         llm_provider="anthropic",
                     )
                 if "Invalid API Key" in error_str:
                     exception_mapping_worked = True
                     raise AuthenticationError(
-                        message=error_str,
+                        message="AnthropicError - {}".format(error_str),
                         model=model,
                         llm_provider="anthropic",
                     )
                 if "content filtering policy" in error_str:
                     exception_mapping_worked = True
                     raise ContentPolicyViolationError(
-                        message=error_str,
+                        message="AnthropicError - {}".format(error_str),
+                        model=model,
+                        llm_provider="anthropic",
+                    )
+                if "Client error '400 Bad Request'" in error_str:
+                    exception_mapping_worked = True
+                    raise BadRequestError(
+                        message="AnthropicError - {}".format(error_str),
                         model=model,
                         llm_provider="anthropic",
                     )
@@ -5934,7 +6031,6 @@ def exception_type(
                             message=f"AnthropicException - {error_str}",
                             llm_provider="anthropic",
                             model=model,
-                            response=original_exception.response,
                         )
                     elif (
                         original_exception.status_code == 400
@@ -5945,7 +6041,13 @@ def exception_type(
                             message=f"AnthropicException - {error_str}",
                             model=model,
                             llm_provider="anthropic",
-                            response=original_exception.response,
+                        )
+                    elif original_exception.status_code == 404:
+                        exception_mapping_worked = True
+                        raise NotFoundError(
+                            message=f"AnthropicException - {error_str}",
+                            model=model,
+                            llm_provider="anthropic",
                         )
                     elif original_exception.status_code == 408:
                         exception_mapping_worked = True
@@ -5960,16 +6062,20 @@ def exception_type(
                             message=f"AnthropicException - {error_str}",
                             llm_provider="anthropic",
                             model=model,
-                            response=original_exception.response,
                         )
                     elif original_exception.status_code == 500:
                         exception_mapping_worked = True
-                        raise APIError(
-                            status_code=500,
-                            message=f"AnthropicException - {error_str}. Handle with `litellm.APIError`.",
+                        raise litellm.InternalServerError(
+                            message=f"AnthropicException - {error_str}. Handle with `litellm.InternalServerError`.",
                             llm_provider="anthropic",
                             model=model,
-                            request=original_exception.request,
+                        )
+                    elif original_exception.status_code == 503:
+                        exception_mapping_worked = True
+                        raise litellm.ServiceUnavailableError(
+                            message=f"AnthropicException - {error_str}. Handle with `litellm.ServiceUnavailableError`.",
+                            llm_provider="anthropic",
+                            model=model,
                         )
             elif custom_llm_provider == "replicate":
                 if "Incorrect authentication token" in error_str:
@@ -6032,6 +6138,14 @@ def exception_type(
                             model=model,
                             llm_provider="replicate",
                         )
+                    elif original_exception.status_code == 422:
+                        exception_mapping_worked = True
+                        raise UnprocessableEntityError(
+                            message=f"ReplicateException - {original_exception.message}",
+                            llm_provider="replicate",
+                            model=model,
+                            response=original_exception.response,
+                        )
                     elif original_exception.status_code == 429:
                         exception_mapping_worked = True
                         raise RateLimitError(
@@ -6090,13 +6204,6 @@ def exception_type(
                         response=original_exception.response,
                         litellm_debug_info=extra_information,
                     )
-                if "Request failed during generation" in error_str:
-                    # this is an internal server error from predibase
-                    raise litellm.InternalServerError(
-                        message=f"PredibaseException - {error_str}",
-                        llm_provider="predibase",
-                        model=model,
-                    )
                 elif hasattr(original_exception, "status_code"):
                     if original_exception.status_code == 500:
                         exception_mapping_worked = True
@@ -6134,7 +6241,10 @@ def exception_type(
                             llm_provider=custom_llm_provider,
                             litellm_debug_info=extra_information,
                         )
-                    elif original_exception.status_code == 422:
+                    elif (
+                        original_exception.status_code == 422
+                        or original_exception.status_code == 424
+                    ):
                         exception_mapping_worked = True
                         raise BadRequestError(
                             message=f"PredibaseException - {original_exception.message}",
@@ -6403,7 +6513,11 @@ def exception_type(
                         ),
                         litellm_debug_info=extra_information,
                     )
-                elif "The response was blocked." in error_str:
+                elif (
+                    "The response was blocked." in error_str
+                    or "Output blocked by content filtering policy"
+                    in error_str  # anthropic on vertex ai
+                ):
                     exception_mapping_worked = True
                     raise ContentPolicyViolationError(
                         message=f"VertexAIException ContentPolicyViolationError - {error_str}",
@@ -7161,6 +7275,7 @@ def exception_type(
                         in error_str
                     )
                     or "Your task failed as a result of our safety system" in error_str
+                    or "The model produced invalid content" in error_str
                 ):
                     exception_mapping_worked = True
                     raise ContentPolicyViolationError(
@@ -7424,6 +7539,9 @@ def exception_type(
         if exception_mapping_worked:
             raise e
         else:
+            for error_type in litellm.LITELLM_EXCEPTION_TYPES:
+                if isinstance(e, error_type):
+                    raise e  # it's already mapped
             raise APIConnectionError(
                 message="{}\n{}".format(original_exception, traceback.format_exc()),
                 llm_provider="",
@@ -7687,6 +7805,7 @@ class CustomStreamWrapper:
             "<s>",
             "</s>",
             "<|im_end|>",
+            "<|im_start|>",
         ]
         self.holding_chunk = ""
         self.complete_response = ""
@@ -8208,7 +8327,7 @@ class CustomStreamWrapper:
             logprobs = None
             usage = None
             original_chunk = None  # this is used for function/tool calling
-            if len(str_line.choices) > 0:
+            if str_line and str_line.choices and len(str_line.choices) > 0:
                 if (
                     str_line.choices[0].delta is not None
                     and str_line.choices[0].delta.content is not None
@@ -9559,6 +9678,11 @@ class CustomStreamWrapper:
                 litellm.request_timeout
             )
             if self.logging_obj is not None:
+                ## LOGGING
+                threading.Thread(
+                    target=self.logging_obj.failure_handler,
+                    args=(e, traceback_exception),
+                ).start()  # log response
                 # Handle any exceptions that might occur during streaming
                 asyncio.create_task(
                     self.logging_obj.async_failure_handler(e, traceback_exception)
@@ -9566,11 +9690,24 @@ class CustomStreamWrapper:
             raise e
         except Exception as e:
             traceback_exception = traceback.format_exc()
-            # Handle any exceptions that might occur during streaming
-            asyncio.create_task(
-                self.logging_obj.async_failure_handler(e, traceback_exception)  # type: ignore
+            if self.logging_obj is not None:
+                ## LOGGING
+                threading.Thread(
+                    target=self.logging_obj.failure_handler,
+                    args=(e, traceback_exception),
+                ).start()  # log response
+                # Handle any exceptions that might occur during streaming
+                asyncio.create_task(
+                    self.logging_obj.async_failure_handler(e, traceback_exception)  # type: ignore
+                )
+            ## Map to OpenAI Exception
+            raise exception_type(
+                model=self.model,
+                custom_llm_provider=self.custom_llm_provider,
+                original_exception=e,
+                completion_kwargs={},
+                extra_kwargs={},
             )
-            raise e
 
 
 class TextCompletionStreamWrapper:
@@ -9642,18 +9779,45 @@ class TextCompletionStreamWrapper:
             raise StopAsyncIteration
 
 
-def mock_completion_streaming_obj(model_response, mock_response, model):
+def mock_completion_streaming_obj(
+    model_response, mock_response, model, n: Optional[int] = None
+):
     for i in range(0, len(mock_response), 3):
-        completion_obj = {"role": "assistant", "content": mock_response[i : i + 3]}
-        model_response.choices[0].delta = completion_obj
+        completion_obj = Delta(role="assistant", content=mock_response[i : i + 3])
+        if n is None:
+            model_response.choices[0].delta = completion_obj
+        else:
+            _all_choices = []
+            for j in range(n):
+                _streaming_choice = litellm.utils.StreamingChoices(
+                    index=j,
+                    delta=litellm.utils.Delta(
+                        role="assistant", content=mock_response[i : i + 3]
+                    ),
+                )
+                _all_choices.append(_streaming_choice)
+            model_response.choices = _all_choices
         yield model_response
 
 
-async def async_mock_completion_streaming_obj(model_response, mock_response, model):
+async def async_mock_completion_streaming_obj(
+    model_response, mock_response, model, n: Optional[int] = None
+):
     for i in range(0, len(mock_response), 3):
         completion_obj = Delta(role="assistant", content=mock_response[i : i + 3])
-        model_response.choices[0].delta = completion_obj
-        model_response.choices[0].finish_reason = "stop"
+        if n is None:
+            model_response.choices[0].delta = completion_obj
+        else:
+            _all_choices = []
+            for j in range(n):
+                _streaming_choice = litellm.utils.StreamingChoices(
+                    index=j,
+                    delta=litellm.utils.Delta(
+                        role="assistant", content=mock_response[i : i + 3]
+                    ),
+                )
+                _all_choices.append(_streaming_choice)
+            model_response.choices = _all_choices
         yield model_response
 
 
