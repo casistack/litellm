@@ -12,7 +12,6 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import httpx  # type: ignore
-import ijson
 import requests  # type: ignore
 
 import litellm
@@ -21,7 +20,10 @@ import litellm.litellm_core_utils.litellm_logging
 from litellm import verbose_logger
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-from litellm.llms.prompt_templates.factory import convert_url_to_base64
+from litellm.llms.prompt_templates.factory import (
+    convert_url_to_base64,
+    response_schema_prompt,
+)
 from litellm.llms.vertex_ai import _gemini_convert_messages_with_history
 from litellm.types.llms.openai import (
     ChatCompletionResponseMessage,
@@ -263,6 +265,8 @@ class VertexGeminiConfig:
 
     - `presence_penalty` (float): This parameter is used to penalize the model from generating the same output as the input. The default value is 0.0.
 
+    - `seed` (int): The seed value is used to help generate the same output for the same input. The default value is None.
+
     Note: Please make sure to modify the default parameters as required for your use case.
     """
 
@@ -275,6 +279,7 @@ class VertexGeminiConfig:
     stop_sequences: Optional[list] = None
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
+    seed: Optional[int] = None
 
     def __init__(
         self,
@@ -287,6 +292,7 @@ class VertexGeminiConfig:
         stop_sequences: Optional[list] = None,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
     ) -> None:
         locals_ = locals()
         for key, value in locals_.items():
@@ -324,6 +330,7 @@ class VertexGeminiConfig:
             "stop",
             "frequency_penalty",
             "presence_penalty",
+            "seed",
         ]
 
     def map_tool_choice_values(
@@ -356,6 +363,7 @@ class VertexGeminiConfig:
         model: str,
         non_default_params: dict,
         optional_params: dict,
+        drop_params: bool,
     ):
         for param, value in non_default_params.items():
             if param == "temperature":
@@ -375,24 +383,43 @@ class VertexGeminiConfig:
                     optional_params["stop_sequences"] = value
             if param == "max_tokens":
                 optional_params["max_output_tokens"] = value
-            if param == "response_format" and value["type"] == "json_object":  # type: ignore
-                optional_params["response_mime_type"] = "application/json"
+            if param == "response_format" and isinstance(value, dict):  # type: ignore
+                if value["type"] == "json_object":
+                    optional_params["response_mime_type"] = "application/json"
+                elif value["type"] == "text":
+                    optional_params["response_mime_type"] = "text/plain"
+                if "response_schema" in value:
+                    optional_params["response_schema"] = value["response_schema"]
             if param == "frequency_penalty":
                 optional_params["frequency_penalty"] = value
             if param == "presence_penalty":
                 optional_params["presence_penalty"] = value
             if param == "tools" and isinstance(value, list):
                 gtool_func_declarations = []
+                googleSearchRetrieval: Optional[dict] = None
+                provider_specific_tools: List[dict] = []
                 for tool in value:
-                    gtool_func_declaration = FunctionDeclaration(
-                        name=tool["function"]["name"],
-                        description=tool["function"].get("description", ""),
-                        parameters=tool["function"].get("parameters", {}),
-                    )
-                    gtool_func_declarations.append(gtool_func_declaration)
-                optional_params["tools"] = [
-                    Tools(function_declarations=gtool_func_declarations)
-                ]
+                    # check if grounding
+                    try:
+                        gtool_func_declaration = FunctionDeclaration(
+                            name=tool["function"]["name"],
+                            description=tool["function"].get("description", ""),
+                            parameters=tool["function"].get("parameters", {}),
+                        )
+                        gtool_func_declarations.append(gtool_func_declaration)
+                    except KeyError:
+                        # assume it's a provider-specific param
+                        verbose_logger.warning(
+                            "Got KeyError parsing tool={}. Assuming it's a provider-specific param. Use `litellm.set_verbose` or `litellm --detailed_debug` to see raw request."
+                        )
+                        if tool.get("googleSearchRetrieval", None) is not None:
+                            googleSearchRetrieval = tool["googleSearchRetrieval"]
+                _tools = Tools(
+                    function_declarations=gtool_func_declarations,
+                )
+                if googleSearchRetrieval is not None:
+                    _tools["googleSearchRetrieval"] = googleSearchRetrieval
+                optional_params["tools"] = [_tools] + provider_specific_tools
             if param == "tool_choice" and (
                 isinstance(value, str) or isinstance(value, dict)
             ):
@@ -401,6 +428,8 @@ class VertexGeminiConfig:
                 )
                 if _tool_choice_value is not None:
                     optional_params["tool_choice"] = _tool_choice_value
+            if param == "seed":
+                optional_params["seed"] = value
         return optional_params
 
     def get_mapped_special_auth_params(self) -> dict:
@@ -467,7 +496,7 @@ async def make_call(
         raise VertexAIError(status_code=response.status_code, message=response.text)
 
     completion_stream = ModelResponseIterator(
-        streaming_response=response.aiter_bytes(), sync_stream=False
+        streaming_response=response.aiter_lines(), sync_stream=False
     )
     # LOGGING
     logging_obj.post_call(
@@ -498,7 +527,7 @@ def make_sync_call(
         raise VertexAIError(status_code=response.status_code, message=response.read())
 
     completion_stream = ModelResponseIterator(
-        streaming_response=response.iter_bytes(chunk_size=2056), sync_stream=True
+        streaming_response=response.iter_lines(), sync_stream=True
     )
 
     # LOGGING
@@ -595,15 +624,15 @@ class VertexLLM(BaseLLM):
 
                 ## GET USAGE ##
                 usage = litellm.Usage(
-                    prompt_tokens=completion_response["usageMetadata"][
-                        "promptTokenCount"
-                    ],
+                    prompt_tokens=completion_response["usageMetadata"].get(
+                        "promptTokenCount", 0
+                    ),
                     completion_tokens=completion_response["usageMetadata"].get(
                         "candidatesTokenCount", 0
                     ),
-                    total_tokens=completion_response["usageMetadata"][
-                        "totalTokenCount"
-                    ],
+                    total_tokens=completion_response["usageMetadata"].get(
+                        "totalTokenCount", 0
+                    ),
                 )
 
                 setattr(model_response, "usage", usage)
@@ -639,15 +668,15 @@ class VertexLLM(BaseLLM):
 
                 ## GET USAGE ##
                 usage = litellm.Usage(
-                    prompt_tokens=completion_response["usageMetadata"][
-                        "promptTokenCount"
-                    ],
+                    prompt_tokens=completion_response["usageMetadata"].get(
+                        "promptTokenCount", 0
+                    ),
                     completion_tokens=completion_response["usageMetadata"].get(
                         "candidatesTokenCount", 0
                     ),
-                    total_tokens=completion_response["usageMetadata"][
-                        "totalTokenCount"
-                    ],
+                    total_tokens=completion_response["usageMetadata"].get(
+                        "totalTokenCount", 0
+                    ),
                 )
 
                 setattr(model_response, "usage", usage)
@@ -657,6 +686,8 @@ class VertexLLM(BaseLLM):
         model_response.choices = []  # type: ignore
 
         try:
+            ## CHECK IF GROUNDING METADATA IN REQUEST
+            grounding_metadata: List[dict] = []
             ## GET TEXT ##
             chat_completion_message = {"role": "assistant"}
             content_str = ""
@@ -664,6 +695,9 @@ class VertexLLM(BaseLLM):
             for idx, candidate in enumerate(completion_response["candidates"]):
                 if "content" not in candidate:
                     continue
+
+                if "groundingMetadata" in candidate:
+                    grounding_metadata.append(candidate["groundingMetadata"])
 
                 if "text" in candidate["content"]["parts"][0]:
                     content_str = candidate["content"]["parts"][0]["text"]
@@ -679,6 +713,7 @@ class VertexLLM(BaseLLM):
                         id=f"call_{str(uuid.uuid4())}",
                         type="function",
                         function=_function_chunk,
+                        index=candidate.get("index", idx),
                     )
                     tools.append(_tool_response_chunk)
 
@@ -697,14 +732,23 @@ class VertexLLM(BaseLLM):
 
             ## GET USAGE ##
             usage = litellm.Usage(
-                prompt_tokens=completion_response["usageMetadata"]["promptTokenCount"],
+                prompt_tokens=completion_response["usageMetadata"].get(
+                    "promptTokenCount", 0
+                ),
                 completion_tokens=completion_response["usageMetadata"].get(
                     "candidatesTokenCount", 0
                 ),
-                total_tokens=completion_response["usageMetadata"]["totalTokenCount"],
+                total_tokens=completion_response["usageMetadata"].get(
+                    "totalTokenCount", 0
+                ),
             )
 
             setattr(model_response, "usage", usage)
+
+            ## ADD GROUNDING METADATA ##
+            model_response._hidden_params["vertex_ai_grounding_metadata"] = (
+                grounding_metadata
+            )
         except Exception as e:
             raise VertexAIError(
                 message="Received={}, Error converting to valid response block={}. File an issue if litellm error - https://github.com/BerriAI/litellm/issues".format(
@@ -740,10 +784,12 @@ class VertexLLM(BaseLLM):
             if project_id is None:
                 project_id = creds.project_id
         else:
-            creds, project_id = google_auth.default(
+            creds, creds_project_id = google_auth.default(
                 quota_project_id=project_id,
                 scopes=["https://www.googleapis.com/auth/cloud-platform"],
             )
+            if project_id is None:
+                project_id = creds_project_id
 
         creds.refresh(Request())
 
@@ -774,11 +820,11 @@ class VertexLLM(BaseLLM):
             return self.access_token, self.project_id
 
         if not self._credentials:
-            self._credentials, project_id = self.load_auth(
+            self._credentials, cred_project_id = self.load_auth(
                 credentials=credentials, project_id=project_id
             )
             if not self.project_id:
-                self.project_id = project_id
+                self.project_id = project_id or cred_project_id
         else:
             self.refresh_auth(self._credentials)
 
@@ -818,12 +864,13 @@ class VertexLLM(BaseLLM):
             endpoint = "generateContent"
             if stream is True:
                 endpoint = "streamGenerateContent"
-
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
+                url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}&alt=sse".format(
                     _gemini_model_name, endpoint, gemini_api_key
                 )
-            )
+            else:
+                url = "https://generativelanguage.googleapis.com/v1beta/{}:{}?key={}".format(
+                    _gemini_model_name, endpoint, gemini_api_key
+                )
         else:
             auth_header, vertex_project = self._ensure_access_token(
                 credentials=vertex_credentials, project_id=vertex_project
@@ -834,7 +881,9 @@ class VertexLLM(BaseLLM):
             endpoint = "generateContent"
             if stream is True:
                 endpoint = "streamGenerateContent"
-            url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:{endpoint}"
+                url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:{endpoint}?alt=sse"
+            else:
+                url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:{endpoint}"
 
         if (
             api_base is not None
@@ -846,6 +895,9 @@ class VertexLLM(BaseLLM):
                 )
             else:
                 url = "{}:{}".format(api_base, endpoint)
+
+            if stream is True:
+                url = url + "?alt=sse"
 
         return auth_header, url
 
@@ -981,7 +1033,7 @@ class VertexLLM(BaseLLM):
                 model=model, custom_llm_provider=_custom_llm_provider
             )
         except Exception as e:
-            verbose_logger.error(
+            verbose_logger.warning(
                 "Unable to identify if system message supported. Defaulting to 'False'. Received error message - {}\nAdd it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json".format(
                     str(e)
                 )
@@ -999,35 +1051,56 @@ class VertexLLM(BaseLLM):
             if len(system_prompt_indices) > 0:
                 for idx in reversed(system_prompt_indices):
                     messages.pop(idx)
-        content = _gemini_convert_messages_with_history(messages=messages)
-        tools: Optional[Tools] = optional_params.pop("tools", None)
-        tool_choice: Optional[ToolConfig] = optional_params.pop("tool_choice", None)
-        safety_settings: Optional[List[SafetSettingsConfig]] = optional_params.pop(
-            "safety_settings", None
-        )  # type: ignore
-        generation_config: Optional[GenerationConfig] = GenerationConfig(
-            **optional_params
-        )
-        data = RequestBody(contents=content)
-        if len(system_content_blocks) > 0:
-            system_instructions = SystemInstructions(parts=system_content_blocks)
-            data["system_instruction"] = system_instructions
-        if tools is not None:
-            data["tools"] = tools
-        if tool_choice is not None:
-            data["toolConfig"] = tool_choice
-        if safety_settings is not None:
-            data["safetySettings"] = safety_settings
-        if generation_config is not None:
-            data["generationConfig"] = generation_config
 
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-        }
-        if auth_header is not None:
-            headers["Authorization"] = f"Bearer {auth_header}"
-        if extra_headers is not None:
-            headers.update(extra_headers)
+        # Checks for 'response_schema' support - if passed in
+        if "response_schema" in optional_params:
+            supports_response_schema = litellm.supports_response_schema(
+                model=model, custom_llm_provider="vertex_ai"
+            )
+            if supports_response_schema is False:
+                user_response_schema_message = response_schema_prompt(
+                    model=model, response_schema=optional_params.get("response_schema")  # type: ignore
+                )
+                messages.append(
+                    {"role": "user", "content": user_response_schema_message}
+                )
+                optional_params.pop("response_schema")
+
+        try:
+            content = _gemini_convert_messages_with_history(messages=messages)
+            tools: Optional[Tools] = optional_params.pop("tools", None)
+            tool_choice: Optional[ToolConfig] = optional_params.pop("tool_choice", None)
+            safety_settings: Optional[List[SafetSettingsConfig]] = optional_params.pop(
+                "safety_settings", None
+            )  # type: ignore
+            cached_content: Optional[str] = optional_params.pop("cached_content", None)
+            generation_config: Optional[GenerationConfig] = GenerationConfig(
+                **optional_params
+            )
+            data = RequestBody(contents=content)
+            if len(system_content_blocks) > 0:
+                system_instructions = SystemInstructions(parts=system_content_blocks)
+                data["system_instruction"] = system_instructions
+            if tools is not None:
+                data["tools"] = tools
+            if tool_choice is not None:
+                data["toolConfig"] = tool_choice
+            if safety_settings is not None:
+                data["safetySettings"] = safety_settings
+            if generation_config is not None:
+                data["generationConfig"] = generation_config
+            if cached_content is not None:
+                data["cachedContent"] = cached_content
+
+            headers = {
+                "Content-Type": "application/json",
+            }
+            if auth_header is not None:
+                headers["Authorization"] = f"Bearer {auth_header}"
+            if extra_headers is not None:
+                headers.update(extra_headers)
+        except Exception as e:
+            raise e
 
         ## LOGGING
         logging_obj.pre_call(
@@ -1116,7 +1189,7 @@ class VertexLLM(BaseLLM):
             response.raise_for_status()
         except httpx.HTTPStatusError as err:
             error_code = err.response.status_code
-            raise VertexAIError(status_code=error_code, message=response.text)
+            raise VertexAIError(status_code=error_code, message=err.response.text)
         except httpx.TimeoutException:
             raise VertexAIError(status_code=408, message="Timeout error occurred.")
 
@@ -1136,23 +1209,25 @@ class VertexLLM(BaseLLM):
     def image_generation(
         self,
         prompt: str,
-        vertex_project: str,
-        vertex_location: str,
+        vertex_project: Optional[str],
+        vertex_location: Optional[str],
+        vertex_credentials: Optional[str],
+        model_response: litellm.ImageResponse,
         model: Optional[
             str
         ] = "imagegeneration",  # vertex ai uses imagegeneration as the default model
-        client: Optional[AsyncHTTPHandler] = None,
+        client: Optional[Any] = None,
         optional_params: Optional[dict] = None,
         timeout: Optional[int] = None,
         logging_obj=None,
-        model_response=None,
         aimg_generation=False,
     ):
-        if aimg_generation == True:
-            response = self.aimage_generation(
+        if aimg_generation is True:
+            return self.aimage_generation(
                 prompt=prompt,
                 vertex_project=vertex_project,
                 vertex_location=vertex_location,
+                vertex_credentials=vertex_credentials,
                 model=model,
                 client=client,
                 optional_params=optional_params,
@@ -1160,13 +1235,99 @@ class VertexLLM(BaseLLM):
                 logging_obj=logging_obj,
                 model_response=model_response,
             )
-            return response
+
+        if client is None:
+            _params = {}
+            if timeout is not None:
+                if isinstance(timeout, float) or isinstance(timeout, int):
+                    _httpx_timeout = httpx.Timeout(timeout)
+                    _params["timeout"] = _httpx_timeout
+            else:
+                _params["timeout"] = httpx.Timeout(timeout=600.0, connect=5.0)
+
+            sync_handler: HTTPHandler = HTTPHandler(**_params)  # type: ignore
+        else:
+            sync_handler = client  # type: ignore
+
+        url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:predict"
+
+        auth_header, _ = self._ensure_access_token(
+            credentials=vertex_credentials, project_id=vertex_project
+        )
+        optional_params = optional_params or {
+            "sampleCount": 1
+        }  # default optional params
+
+        request_data = {
+            "instances": [{"prompt": prompt}],
+            "parameters": optional_params,
+        }
+
+        request_str = f"\n curl -X POST \\\n -H \"Authorization: Bearer {auth_header[:10] + 'XXXXXXXXXX'}\" \\\n -H \"Content-Type: application/json; charset=utf-8\" \\\n -d {request_data} \\\n \"{url}\""
+        logging_obj.pre_call(
+            input=prompt,
+            api_key=None,
+            additional_args={
+                "complete_input_dict": optional_params,
+                "request_str": request_str,
+            },
+        )
+
+        logging_obj.pre_call(
+            input=prompt,
+            api_key=None,
+            additional_args={
+                "complete_input_dict": optional_params,
+                "request_str": request_str,
+            },
+        )
+
+        response = sync_handler.post(
+            url=url,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": f"Bearer {auth_header}",
+            },
+            data=json.dumps(request_data),
+        )
+
+        if response.status_code != 200:
+            raise Exception(f"Error: {response.status_code} {response.text}")
+        """
+        Vertex AI Image generation response example:
+        {
+            "predictions": [
+                {
+                "bytesBase64Encoded": "BASE64_IMG_BYTES",
+                "mimeType": "image/png"
+                },
+                {
+                "mimeType": "image/png",
+                "bytesBase64Encoded": "BASE64_IMG_BYTES"
+                }
+            ]
+        }
+        """
+
+        _json_response = response.json()
+        _predictions = _json_response["predictions"]
+
+        _response_data: List[litellm.ImageObject] = []
+        for _prediction in _predictions:
+            _bytes_base64_encoded = _prediction["bytesBase64Encoded"]
+            image_object = litellm.ImageObject(b64_json=_bytes_base64_encoded)
+            _response_data.append(image_object)
+
+        model_response.data = _response_data
+
+        return model_response
 
     async def aimage_generation(
         self,
         prompt: str,
-        vertex_project: str,
-        vertex_location: str,
+        vertex_project: Optional[str],
+        vertex_location: Optional[str],
+        vertex_credentials: Optional[str],
         model_response: litellm.ImageResponse,
         model: Optional[
             str
@@ -1211,7 +1372,9 @@ class VertexLLM(BaseLLM):
         } \
         "https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/us-central1/publishers/google/models/imagegeneration:predict"
         """
-        auth_header, _ = self._ensure_access_token(credentials=None, project_id=None)
+        auth_header, _ = self._ensure_access_token(
+            credentials=vertex_credentials, project_id=vertex_project
+        )
         optional_params = optional_params or {
             "sampleCount": 1
         }  # default optional params
@@ -1275,11 +1438,6 @@ class VertexLLM(BaseLLM):
 class ModelResponseIterator:
     def __init__(self, streaming_response, sync_stream: bool):
         self.streaming_response = streaming_response
-        if sync_stream:
-            self.response_iterator = iter(self.streaming_response)
-
-        self.events = ijson.sendable_list()
-        self.coro = ijson.items_coro(self.events, "item")
 
     def chunk_parser(self, chunk: dict) -> GenericStreamingChunk:
         try:
@@ -1293,26 +1451,43 @@ class ModelResponseIterator:
 
             gemini_chunk = processed_chunk["candidates"][0]
 
-            if (
-                "content" in gemini_chunk
-                and "text" in gemini_chunk["content"]["parts"][0]
-            ):
-                text = gemini_chunk["content"]["parts"][0]["text"]
+            if "content" in gemini_chunk:
+                if "text" in gemini_chunk["content"]["parts"][0]:
+                    text = gemini_chunk["content"]["parts"][0]["text"]
+                elif "functionCall" in gemini_chunk["content"]["parts"][0]:
+                    function_call = ChatCompletionToolCallFunctionChunk(
+                        name=gemini_chunk["content"]["parts"][0]["functionCall"][
+                            "name"
+                        ],
+                        arguments=json.dumps(
+                            gemini_chunk["content"]["parts"][0]["functionCall"]["args"]
+                        ),
+                    )
+                    tool_use = ChatCompletionToolCallChunk(
+                        id=str(uuid.uuid4()),
+                        type="function",
+                        function=function_call,
+                        index=0,
+                    )
 
             if "finishReason" in gemini_chunk:
                 finish_reason = map_finish_reason(
                     finish_reason=gemini_chunk["finishReason"]
                 )
-                ## DO NOT SET 'finish_reason' = True
+                ## DO NOT SET 'is_finished' = True
                 ## GEMINI SETS FINISHREASON ON EVERY CHUNK!
 
             if "usageMetadata" in processed_chunk:
                 usage = ChatCompletionUsageBlock(
-                    prompt_tokens=processed_chunk["usageMetadata"]["promptTokenCount"],
-                    completion_tokens=processed_chunk["usageMetadata"][
-                        "candidatesTokenCount"
-                    ],
-                    total_tokens=processed_chunk["usageMetadata"]["totalTokenCount"],
+                    prompt_tokens=processed_chunk["usageMetadata"].get(
+                        "promptTokenCount", 0
+                    ),
+                    completion_tokens=processed_chunk["usageMetadata"].get(
+                        "candidatesTokenCount", 0
+                    ),
+                    total_tokens=processed_chunk["usageMetadata"].get(
+                        "totalTokenCount", 0
+                    ),
                 )
 
             returned_chunk = GenericStreamingChunk(
@@ -1329,31 +1504,36 @@ class ModelResponseIterator:
 
     # Sync iterator
     def __iter__(self):
+        self.response_iterator = self.streaming_response
         return self
 
     def __next__(self):
         try:
             chunk = self.response_iterator.__next__()
-            self.coro.send(chunk)
-            if self.events:
-                event = self.events.pop(0)
-                json_chunk = event
-                return self.chunk_parser(chunk=json_chunk)
-            return GenericStreamingChunk(
-                text="",
-                is_finished=False,
-                finish_reason="",
-                usage=None,
-                index=0,
-                tool_use=None,
-            )
         except StopIteration:
-            if self.events:  # flush the events
-                event = self.events.pop(0)  # Remove the first event
-                return self.chunk_parser(chunk=event)
             raise StopIteration
         except ValueError as e:
-            raise RuntimeError(f"Error parsing chunk: {e}")
+            raise RuntimeError(f"Error receiving chunk from stream: {e}")
+
+        try:
+            chunk = chunk.replace("data:", "")
+            chunk = chunk.strip()
+            if len(chunk) > 0:
+                json_chunk = json.loads(chunk)
+                return self.chunk_parser(chunk=json_chunk)
+            else:
+                return GenericStreamingChunk(
+                    text="",
+                    is_finished=False,
+                    finish_reason="",
+                    usage=None,
+                    index=0,
+                    tool_use=None,
+                )
+        except StopIteration:
+            raise StopIteration
+        except ValueError as e:
+            raise RuntimeError(f"Error parsing chunk: {e},\nReceived chunk: {chunk}")
 
     # Async iterator
     def __aiter__(self):
@@ -1363,23 +1543,27 @@ class ModelResponseIterator:
     async def __anext__(self):
         try:
             chunk = await self.async_response_iterator.__anext__()
-            self.coro.send(chunk)
-            if self.events:
-                event = self.events.pop(0)
-                json_chunk = event
-                return self.chunk_parser(chunk=json_chunk)
-            return GenericStreamingChunk(
-                text="",
-                is_finished=False,
-                finish_reason="",
-                usage=None,
-                index=0,
-                tool_use=None,
-            )
         except StopAsyncIteration:
-            if self.events:  # flush the events
-                event = self.events.pop(0)  # Remove the first event
-                return self.chunk_parser(chunk=event)
             raise StopAsyncIteration
         except ValueError as e:
-            raise RuntimeError(f"Error parsing chunk: {e}")
+            raise RuntimeError(f"Error receiving chunk from stream: {e}")
+
+        try:
+            chunk = chunk.replace("data:", "")
+            chunk = chunk.strip()
+            if len(chunk) > 0:
+                json_chunk = json.loads(chunk)
+                return self.chunk_parser(chunk=json_chunk)
+            else:
+                return GenericStreamingChunk(
+                    text="",
+                    is_finished=False,
+                    finish_reason="",
+                    usage=None,
+                    index=0,
+                    tool_use=None,
+                )
+        except StopAsyncIteration:
+            raise StopAsyncIteration
+        except ValueError as e:
+            raise RuntimeError(f"Error parsing chunk: {e},\nReceived chunk: {chunk}")

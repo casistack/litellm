@@ -1,5 +1,5 @@
 # What is this?
-## Helper utilities for the model response objects
+## Helper utilities
 
 
 def map_finish_reason(
@@ -26,7 +26,7 @@ def map_finish_reason(
         finish_reason == "FINISH_REASON_UNSPECIFIED" or finish_reason == "STOP"
     ):  # vertex ai - got from running `print(dir(response_obj.candidates[0].finish_reason))`: ['FINISH_REASON_UNSPECIFIED', 'MAX_TOKENS', 'OTHER', 'RECITATION', 'SAFETY', 'STOP',]
         return "stop"
-    elif finish_reason == "SAFETY":  # vertex ai
+    elif finish_reason == "SAFETY" or finish_reason == "RECITATION":  # vertex ai
         return "content_filter"
     elif finish_reason == "STOP":  # vertex ai
         return "stop"
@@ -39,3 +39,18 @@ def map_finish_reason(
     elif finish_reason == "content_filtered":
         return "content_filter"
     return finish_reason
+
+
+def remove_index_from_tool_calls(messages, tool_calls):
+    for tool_call in tool_calls:
+        if "index" in tool_call:
+            tool_call.pop("index")
+
+    for message in messages:
+        if "tool_calls" in message:
+            tool_calls = message["tool_calls"]
+            for tool_call in tool_calls:
+                if "index" in tool_call:
+                    tool_call.pop("index")
+
+    return

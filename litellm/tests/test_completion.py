@@ -23,7 +23,7 @@ from litellm import RateLimitError, Timeout, completion, completion_cost, embedd
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.prompt_templates.factory import anthropic_messages_pt
 
-# litellm.num_retries = 3
+# litellm.num_retries=3
 litellm.cache = None
 litellm.success_callback = []
 user_message = "Write a short poem about the sky"
@@ -46,7 +46,7 @@ def reset_callbacks():
 @pytest.mark.skip(reason="Local test")
 def test_response_model_none():
     """
-    Addresses: https://github.com/BerriAI/litellm/issues/2972
+    Addresses:https://github.com/BerriAI/litellm/issues/2972
     """
     x = completion(
         model="mymodel",
@@ -134,6 +134,36 @@ def test_completion_azure_ai_command_r():
             model="azure_ai/command-r-plus",
             messages=[{"role": "user", "content": "What is the meaning of life?"}],
         )  # type: ignore
+
+        assert "azure_ai" in response.model
+    except litellm.Timeout as e:
+        pass
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.parametrize("sync_mode", [True, False])
+@pytest.mark.asyncio
+async def test_completion_azure_ai_mistral_invalid_params(sync_mode):
+    try:
+        import os
+
+        litellm.set_verbose = True
+
+        os.environ["AZURE_AI_API_BASE"] = os.getenv("AZURE_MISTRAL_API_BASE", "")
+        os.environ["AZURE_AI_API_KEY"] = os.getenv("AZURE_MISTRAL_API_KEY", "")
+
+        data = {
+            "model": "azure_ai/mistral",
+            "messages": [{"role": "user", "content": "What is the meaning of life?"}],
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.1,
+            "drop_params": True,
+        }
+        if sync_mode:
+            response: litellm.ModelResponse = completion(**data)  # type: ignore
+        else:
+            response: litellm.ModelResponse = await litellm.acompletion(**data)  # type: ignore
 
         assert "azure_ai" in response.model
     except litellm.Timeout as e:
@@ -281,13 +311,42 @@ def test_completion_claude():
 # test_completion_claude()
 
 
+@pytest.mark.skip(reason="No empower api key")
+def test_completion_empower():
+    litellm.set_verbose = True
+    messages = [
+        {
+            "role": "user",
+            "content": "\nWhat is the query for `console.log` => `console.error`\n",
+        },
+        {
+            "role": "assistant",
+            "content": "\nThis is the GritQL query for the given before/after examples:\n<gritql>\n`console.log` => `console.error`\n</gritql>\n",
+        },
+        {
+            "role": "user",
+            "content": "\nWhat is the query for `console.info` => `consdole.heaven`\n",
+        },
+    ]
+    try:
+        # test without max tokens
+        response = completion(
+            model="empower/empower-functions-small",
+            messages=messages,
+        )
+        # Add any assertions, here to check response args
+        print(response)
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
 def test_completion_claude_3_empty_response():
     litellm.set_verbose = True
 
     messages = [
         {
             "role": "system",
-            "content": "You are 2twNLGfqk4GMOn3ffp4p.",
+            "content": [{"type": "text", "text": "You are 2twNLGfqk4GMOn3ffp4p."}],
         },
         {"role": "user", "content": "Hi gm!", "name": "ishaan"},
         {"role": "assistant", "content": "Good morning! How are you doing today?"},
@@ -406,6 +465,103 @@ def test_completion_claude_3_function_call(model):
         print(second_response)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.parametrize("sync_mode", [True])
+@pytest.mark.parametrize(
+    "model, api_key, api_base",
+    [
+        ("gpt-3.5-turbo", None, None),
+        ("claude-3-opus-20240229", None, None),
+        ("command-r", None, None),
+        ("anthropic.claude-3-sonnet-20240229-v1:0", None, None),
+        (
+            "azure_ai/command-r-plus",
+            os.getenv("AZURE_COHERE_API_KEY"),
+            os.getenv("AZURE_COHERE_API_BASE"),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_model_function_invoke(model, sync_mode, api_key, api_base):
+    try:
+        litellm.set_verbose = True
+
+        messages = [
+            {
+                "role": "system",
+                "content": "Your name is Litellm Bot, you are a helpful assistant",
+            },
+            # User asks for their name and weather in San Francisco
+            {
+                "role": "user",
+                "content": "Hello, what is your name and can you tell me the weather?",
+            },
+            # Assistant replies with a tool call
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "index": 0,
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "San Francisco, CA"}',
+                        },
+                    }
+                ],
+            },
+            # The result of the tool call is added to the history
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "content": "27 degrees celsius and clear in San Francisco, CA",
+            },
+            # Now the assistant can reply with the result of the tool call.
+        ]
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the current weather in a given location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "The city and state, e.g. San Francisco, CA",
+                            }
+                        },
+                        "required": ["location"],
+                    },
+                },
+            }
+        ]
+
+        data = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "api_key": api_key,
+            "api_base": api_base,
+        }
+        if sync_mode:
+            response = litellm.completion(**data)
+        else:
+            response = await litellm.acompletion(**data)
+
+        print(f"response: {response}")
+    except litellm.RateLimitError as e:
+        pass
+    except Exception as e:
+        if "429 Quota exceeded" in str(e):
+            pass
+        else:
+            pytest.fail("An unexpected exception occurred - {}".format(str(e)))
 
 
 @pytest.mark.asyncio
@@ -1184,6 +1340,133 @@ def test_completion_azure_gpt4_vision():
 # test_completion_azure_gpt4_vision()
 
 
+def test_completion_openai_response_headers():
+    """
+    Tests if LiteLLM reurns response hea
+    """
+    litellm.return_response_headers = True
+
+    # /chat/completion
+    messages = [
+        {
+            "role": "user",
+            "content": "hi",
+        }
+    ]
+
+    response = completion(
+        model="gpt-4o-mini",
+        messages=messages,
+    )
+
+    print(f"response: {response}")
+
+    print("response_headers=", response._response_headers)
+    assert response._response_headers is not None
+    assert "x-ratelimit-remaining-tokens" in response._response_headers
+    assert isinstance(
+        response._hidden_params["additional_headers"][
+            "llm_provider-x-ratelimit-remaining-requests"
+        ],
+        str,
+    )
+
+    # /chat/completion - with streaming
+
+    streaming_response = litellm.completion(
+        model="gpt-4o-mini",
+        messages=messages,
+        stream=True,
+    )
+    response_headers = streaming_response._response_headers
+    print("streaming response_headers=", response_headers)
+    assert response_headers is not None
+    assert "x-ratelimit-remaining-tokens" in response_headers
+    assert isinstance(
+        response._hidden_params["additional_headers"][
+            "llm_provider-x-ratelimit-remaining-requests"
+        ],
+        str,
+    )
+
+    for chunk in streaming_response:
+        print("chunk=", chunk)
+
+    # embedding
+    embedding_response = litellm.embedding(
+        model="text-embedding-ada-002",
+        input="hello",
+    )
+
+    embedding_response_headers = embedding_response._response_headers
+    print("embedding_response_headers=", embedding_response_headers)
+    assert embedding_response_headers is not None
+    assert "x-ratelimit-remaining-tokens" in embedding_response_headers
+    assert isinstance(
+        response._hidden_params["additional_headers"][
+            "llm_provider-x-ratelimit-remaining-requests"
+        ],
+        str,
+    )
+
+    litellm.return_response_headers = False
+
+
+@pytest.mark.asyncio()
+async def test_async_completion_openai_response_headers():
+    """
+    Tests if LiteLLM reurns response hea
+    """
+    litellm.return_response_headers = True
+
+    # /chat/completion
+    messages = [
+        {
+            "role": "user",
+            "content": "hi",
+        }
+    ]
+
+    response = await litellm.acompletion(
+        model="gpt-4o-mini",
+        messages=messages,
+    )
+
+    print(f"response: {response}")
+
+    print("response_headers=", response._response_headers)
+    assert response._response_headers is not None
+    assert "x-ratelimit-remaining-tokens" in response._response_headers
+
+    # /chat/completion with streaming
+
+    streaming_response = await litellm.acompletion(
+        model="gpt-4o-mini",
+        messages=messages,
+        stream=True,
+    )
+    response_headers = streaming_response._response_headers
+    print("streaming response_headers=", response_headers)
+    assert response_headers is not None
+    assert "x-ratelimit-remaining-tokens" in response_headers
+
+    async for chunk in streaming_response:
+        print("chunk=", chunk)
+
+    # embedding
+    embedding_response = await litellm.aembedding(
+        model="text-embedding-ada-002",
+        input="hello",
+    )
+
+    embedding_response_headers = embedding_response._response_headers
+    print("embedding_response_headers=", embedding_response_headers)
+    assert embedding_response_headers is not None
+    assert "x-ratelimit-remaining-tokens" in embedding_response_headers
+
+    litellm.return_response_headers = False
+
+
 @pytest.mark.parametrize("model", ["gpt-3.5-turbo", "gpt-4", "gpt-4o"])
 def test_completion_openai_params(model):
     litellm.drop_params = True
@@ -1220,6 +1503,30 @@ def test_completion_fireworks_ai():
         print(response)
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.parametrize(
+    "api_key, api_base", [(None, "my-bad-api-base"), ("my-bad-api-key", None)]
+)
+def test_completion_fireworks_ai_dynamic_params(api_key, api_base):
+    try:
+        litellm.set_verbose = True
+        messages = [
+            {"role": "system", "content": "You're a good bot"},
+            {
+                "role": "user",
+                "content": "Hey",
+            },
+        ]
+        response = completion(
+            model="fireworks_ai/accounts/fireworks/models/mixtral-8x7b-instruct",
+            messages=messages,
+            api_base=api_base,
+            api_key=api_key,
+        )
+        pytest.fail(f"This call should have failed!")
+    except Exception as e:
+        pass
 
 
 @pytest.mark.skip(reason="this test is flaky")
@@ -2724,7 +3031,7 @@ def test_completion_together_ai_mixtral():
 
 def test_completion_together_ai_yi_chat():
     litellm.set_verbose = True
-    model_name = "together_ai/zero-one-ai/Yi-34B-Chat"
+    model_name = "together_ai/mistralai/Mistral-7B-Instruct-v0.1"
     try:
         messages = [
             {"role": "user", "content": "What llm are you?"},
@@ -2939,32 +3246,38 @@ def response_format_tests(response: litellm.ModelResponse):
 @pytest.mark.asyncio
 async def test_completion_bedrock_httpx_models(sync_mode, model):
     litellm.set_verbose = True
+    try:
 
-    if sync_mode:
-        response = completion(
-            model=model,
-            messages=[{"role": "user", "content": "Hey! how's it going?"}],
-            temperature=0.2,
-            max_tokens=200,
-        )
+        if sync_mode:
+            response = completion(
+                model=model,
+                messages=[{"role": "user", "content": "Hey! how's it going?"}],
+                temperature=0.2,
+                max_tokens=200,
+            )
 
-        assert isinstance(response, litellm.ModelResponse)
+            assert isinstance(response, litellm.ModelResponse)
 
-        response_format_tests(response=response)
-    else:
-        response = await litellm.acompletion(
-            model=model,
-            messages=[{"role": "user", "content": "Hey! how's it going?"}],
-            temperature=0.2,
-            max_tokens=100,
-        )
+            response_format_tests(response=response)
+        else:
+            response = await litellm.acompletion(
+                model=model,
+                messages=[{"role": "user", "content": "Hey! how's it going?"}],
+                temperature=0.2,
+                max_tokens=100,
+            )
 
-        assert isinstance(response, litellm.ModelResponse)
+            assert isinstance(response, litellm.ModelResponse)
+
+            print(f"response: {response}")
+            response_format_tests(response=response)
 
         print(f"response: {response}")
-        response_format_tests(response=response)
-
-    print(f"response: {response}")
+    except litellm.RateLimitError as e:
+        print("got rate limit error=", e)
+        pass
+    except Exception as e:
+        pytest.fail(f"An error occurred - {str(e)}")
 
 
 def test_completion_bedrock_titan_null_response():
@@ -3133,7 +3446,9 @@ def test_completion_anthropic_hanging():
         {"role": "function", "name": "get_capital", "content": "Kokoko"},
     ]
 
-    converted_messages = anthropic_messages_pt(messages)
+    converted_messages = anthropic_messages_pt(
+        messages, model="claude-3-sonnet-20240229", llm_provider="anthropic"
+    )
 
     print(f"converted_messages: {converted_messages}")
 
@@ -3505,6 +3820,8 @@ def test_completion_nvidia_nim():
                     "content": "What's the weather like in Boston today in Fahrenheit?",
                 }
             ],
+            presence_penalty=0.5,
+            frequency_penalty=0.1,
         )
         # Add any assertions here to check the response
         print(response)

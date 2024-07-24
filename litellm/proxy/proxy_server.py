@@ -1,24 +1,19 @@
 import ast
 import asyncio
 import copy
-import hashlib
-import importlib
 import inspect
+import io
 import os
-import platform
 import random
-import re
 import secrets
-import shutil
 import subprocess
 import sys
-import threading
 import time
 import traceback
 import uuid
 import warnings
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Set, get_args
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import requests
 
@@ -106,7 +101,6 @@ import litellm
 from litellm import (
     CancelBatchRequest,
     CreateBatchRequest,
-    CreateFileRequest,
     ListBatchRequest,
     RetrieveBatchRequest,
 )
@@ -140,8 +134,24 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 
 ## Import All Misc routes here ##
 from litellm.proxy.caching_routes import router as caching_router
+from litellm.proxy.common_utils.admin_ui_utils import (
+    html_form,
+    show_missing_vars_in_env,
+)
 from litellm.proxy.common_utils.debug_utils import router as debugging_endpoints_router
-from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
+from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+    decrypt_value_helper,
+    encrypt_value_helper,
+)
+from litellm.proxy.common_utils.http_parsing_utils import (
+    _read_request_body,
+    check_file_size_under_limit,
+)
+from litellm.proxy.common_utils.init_callbacks import initialize_callbacks_on_proxy
+from litellm.proxy.common_utils.openai_endpoint_utils import (
+    remove_sensitive_info_from_deployment,
+)
+from litellm.proxy.guardrails.init_guardrails import initialize_guardrails
 from litellm.proxy.health_check import perform_health_check
 from litellm.proxy.health_endpoints._health_endpoints import router as health_router
 from litellm.proxy.hooks.prompt_injection_detection import (
@@ -160,7 +170,16 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
 from litellm.proxy.management_endpoints.key_management_endpoints import (
     router as key_management_router,
 )
+from litellm.proxy.management_endpoints.team_callback_endpoints import (
+    router as team_callback_router,
+)
 from litellm.proxy.management_endpoints.team_endpoints import router as team_router
+from litellm.proxy.openai_files_endpoints.files_endpoints import (
+    router as openai_files_router,
+)
+from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
+    initialize_pass_through_endpoints,
+)
 from litellm.proxy.secret_managers.aws_secret_manager import (
     load_aws_kms,
     load_aws_secret_manager,
@@ -170,6 +189,9 @@ from litellm.proxy.spend_tracking.spend_management_endpoints import (
     router as spend_management_router,
 )
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+from litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints import (
+    router as ui_crud_endpoints_router,
+)
 from litellm.proxy.utils import (
     DBClient,
     PrismaClient,
@@ -178,13 +200,9 @@ from litellm.proxy.utils import (
     _get_projected_spend_over_limit,
     _is_projected_spend_over_limit,
     _is_valid_team_configs,
-    decrypt_value,
-    encrypt_value,
     get_error_message_str,
     get_instance_fn,
     hash_token,
-    html_form,
-    missing_keys_html_form,
     reset_budget,
     send_email,
     update_spend,
@@ -198,7 +216,14 @@ from litellm.router import (
 from litellm.router import ModelInfo as RouterModelInfo
 from litellm.router import updateDeployment
 from litellm.scheduler import DefaultPriorities, FlowItem, Scheduler
+from litellm.types.llms.anthropic import (
+    AnthropicMessagesRequest,
+    AnthropicResponse,
+    AnthropicResponseContentBlockText,
+    AnthropicResponseUsageBlock,
+)
 from litellm.types.llms.openai import HttpxBinaryResponseContent
+from litellm.types.router import RouterGeneralSettings
 
 try:
     from litellm._version import version
@@ -311,6 +336,7 @@ class UserAPIKeyCacheTTLEnum(enum.Enum):
 @app.exception_handler(ProxyException)
 async def openai_exception_handler(request: Request, exc: ProxyException):
     # NOTE: DO NOT MODIFY THIS, its crucial to map to Openai exceptions
+    headers = exc.headers
     return JSONResponse(
         status_code=(
             int(exc.code) if exc.code else status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -323,6 +349,7 @@ async def openai_exception_handler(request: Request, exc: ProxyException):
                 "code": exc.code,
             }
         },
+        headers=headers,
     )
 
 
@@ -392,6 +419,7 @@ user_custom_key_generate = None
 use_background_health_checks = None
 use_queue = False
 health_check_interval = None
+health_check_details = None
 health_check_results = {}
 queue: List = []
 litellm_proxy_budget_name = "litellm-proxy-budget"
@@ -428,21 +456,25 @@ def _get_pydantic_json_dict(pydantic_obj: BaseModel) -> dict:
 def get_custom_headers(
     *,
     user_api_key_dict: UserAPIKeyAuth,
+    call_id: Optional[str] = None,
     model_id: Optional[str] = None,
     cache_key: Optional[str] = None,
     api_base: Optional[str] = None,
     version: Optional[str] = None,
     model_region: Optional[str] = None,
+    response_cost: Optional[Union[float, str]] = None,
     fastest_response_batch_completion: Optional[bool] = None,
     **kwargs,
 ) -> dict:
     exclude_values = {"", None}
     headers = {
+        "x-litellm-call-id": call_id,
         "x-litellm-model-id": model_id,
         "x-litellm-cache-key": cache_key,
         "x-litellm-model-api-base": api_base,
         "x-litellm-version": version,
         "x-litellm-model-region": model_region,
+        "x-litellm-response-cost": str(response_cost),
         "x-litellm-key-tpm-limit": str(user_api_key_dict.tpm_limit),
         "x-litellm-key-rpm-limit": str(user_api_key_dict.rpm_limit),
         "x-litellm-fastest_response_batch_completion": (
@@ -588,7 +620,7 @@ async def _PROXY_failure_handler(
         _model_id = _metadata.get("model_info", {}).get("id", "")
         _model_group = _metadata.get("model_group", "")
         api_base = litellm.get_api_base(model=_model, optional_params=_litellm_params)
-        _exception_string = str(_exception)[:500]
+        _exception_string = str(_exception)
 
         error_log = LiteLLM_ErrorLogs(
             request_id=str(uuid.uuid4()),
@@ -625,7 +657,11 @@ async def _PROXY_track_cost_callback(
     global prisma_client, custom_db_client
     try:
         # check if it has collected an entire stream response
-        verbose_proxy_logger.debug("Proxy: In track_cost_callback for: %s", kwargs)
+        verbose_proxy_logger.debug(
+            "Proxy: In track_cost_callback for: kwargs=%s and completion_response: %s",
+            kwargs,
+            completion_response,
+        )
         verbose_proxy_logger.debug(
             f"kwargs stream: {kwargs.get('stream', None)} + complete streaming response: {kwargs.get('complete_streaming_response', None)}"
         )
@@ -1176,10 +1212,14 @@ async def _run_background_health_check():
 
     Update health_check_results, based on this.
     """
-    global health_check_results, llm_model_list, health_check_interval
+    global health_check_results, llm_model_list, health_check_interval, health_check_details
+
+    # make 1 deep copy of llm_model_list -> use this for all background health checks
+    _llm_model_list = copy.deepcopy(llm_model_list)
+
     while True:
         healthy_endpoints, unhealthy_endpoints = await perform_health_check(
-            model_list=llm_model_list
+            model_list=_llm_model_list, details=health_check_details
         )
 
         # Update the global variable with the health check results
@@ -1228,6 +1268,7 @@ class ProxyConfig:
         ## DB
         if prisma_client is not None and (
             general_settings.get("store_model_in_db", False) == True
+            or store_model_in_db is True
         ):
             _tasks = []
             keys = [
@@ -1261,7 +1302,7 @@ class ProxyConfig:
         return config
 
     async def save_config(self, new_config: dict):
-        global prisma_client, general_settings, user_config_file_path
+        global prisma_client, general_settings, user_config_file_path, store_model_in_db
         # Load existing config
         ## DB - writes valid config to db
         """
@@ -1270,6 +1311,7 @@ class ProxyConfig:
         """
         if prisma_client is not None and (
             general_settings.get("store_model_in_db", False) == True
+            or store_model_in_db
         ):
             # if using - db for config - models are in ModelTable
             new_config.pop("model_list", None)
@@ -1329,7 +1371,7 @@ class ProxyConfig:
         """
         Load config values into proxy global state
         """
-        global master_key, user_config_file_path, otel_logging, user_custom_auth, user_custom_auth_path, user_custom_key_generate, use_background_health_checks, health_check_interval, use_queue, custom_db_client, proxy_budget_rescheduler_max_time, proxy_budget_rescheduler_min_time, ui_access_mode, litellm_master_key_hash, proxy_batch_write_at, disable_spend_logs, prompt_injection_detection_obj, redis_usage_cache, store_model_in_db, premium_user, open_telemetry_logger
+        global master_key, user_config_file_path, otel_logging, user_custom_auth, user_custom_auth_path, user_custom_key_generate, use_background_health_checks, health_check_interval, use_queue, custom_db_client, proxy_budget_rescheduler_max_time, proxy_budget_rescheduler_min_time, ui_access_mode, litellm_master_key_hash, proxy_batch_write_at, disable_spend_logs, prompt_injection_detection_obj, redis_usage_cache, store_model_in_db, premium_user, open_telemetry_logger, health_check_details
 
         # Load existing config
         config = await self.get_config(config_file_path=config_file_path)
@@ -1434,248 +1476,30 @@ class ProxyConfig:
                         )
                 elif key == "cache" and value == False:
                     pass
-                elif key == "callbacks":
-                    if isinstance(value, list):
-                        imported_list: List[Any] = []
-                        known_compatible_callbacks = list(
-                            get_args(
-                                litellm._custom_logger_compatible_callbacks_literal
-                            )
+                elif key == "guardrails":
+                    if premium_user is not True:
+                        raise ValueError(
+                            "Trying to use `guardrails` on config.yaml "
+                            + CommonProxyErrors.not_premium_user.value
                         )
-                        for callback in value:  # ["presidio", <my-custom-callback>]
-                            if (
-                                isinstance(callback, str)
-                                and callback in known_compatible_callbacks
-                            ):
-                                imported_list.append(callback)
-                            elif isinstance(callback, str) and callback == "otel":
-                                from litellm.integrations.opentelemetry import (
-                                    OpenTelemetry,
-                                )
 
-                                open_telemetry_logger = OpenTelemetry()
-
-                                imported_list.append(open_telemetry_logger)
-                            elif isinstance(callback, str) and callback == "presidio":
-                                from litellm.proxy.hooks.presidio_pii_masking import (
-                                    _OPTIONAL_PresidioPIIMasking,
-                                )
-
-                                pii_masking_object = _OPTIONAL_PresidioPIIMasking()
-                                imported_list.append(pii_masking_object)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "llamaguard_moderations"
-                            ):
-                                from enterprise.enterprise_hooks.llama_guard import (
-                                    _ENTERPRISE_LlamaGuard,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use Llama Guard"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                llama_guard_object = _ENTERPRISE_LlamaGuard()
-                                imported_list.append(llama_guard_object)
-                            elif (
-                                isinstance(callback, str) and callback == "hide_secrets"
-                            ):
-                                from enterprise.enterprise_hooks.secret_detection import (
-                                    _ENTERPRISE_SecretDetection,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use secret hiding"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                _secret_detection_object = _ENTERPRISE_SecretDetection()
-                                imported_list.append(_secret_detection_object)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "openai_moderations"
-                            ):
-                                from enterprise.enterprise_hooks.openai_moderation import (
-                                    _ENTERPRISE_OpenAI_Moderation,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use OpenAI Moderations Check"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                openai_moderations_object = (
-                                    _ENTERPRISE_OpenAI_Moderation()
-                                )
-                                imported_list.append(openai_moderations_object)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "lakera_prompt_injection"
-                            ):
-                                from enterprise.enterprise_hooks.lakera_ai import (
-                                    _ENTERPRISE_lakeraAI_Moderation,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use LakeraAI Prompt Injection"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                lakera_moderations_object = (
-                                    _ENTERPRISE_lakeraAI_Moderation()
-                                )
-                                imported_list.append(lakera_moderations_object)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "google_text_moderation"
-                            ):
-                                from enterprise.enterprise_hooks.google_text_moderation import (
-                                    _ENTERPRISE_GoogleTextModeration,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use Google Text Moderation"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                google_text_moderation_obj = (
-                                    _ENTERPRISE_GoogleTextModeration()
-                                )
-                                imported_list.append(google_text_moderation_obj)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "llmguard_moderations"
-                            ):
-                                from enterprise.enterprise_hooks.llm_guard import (
-                                    _ENTERPRISE_LLMGuard,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use Llm Guard"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                llm_guard_moderation_obj = _ENTERPRISE_LLMGuard()
-                                imported_list.append(llm_guard_moderation_obj)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "blocked_user_check"
-                            ):
-                                from enterprise.enterprise_hooks.blocked_user_list import (
-                                    _ENTERPRISE_BlockedUserList,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use ENTERPRISE BlockedUser"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                blocked_user_list = _ENTERPRISE_BlockedUserList(
-                                    prisma_client=prisma_client
-                                )
-                                imported_list.append(blocked_user_list)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "banned_keywords"
-                            ):
-                                from enterprise.enterprise_hooks.banned_keywords import (
-                                    _ENTERPRISE_BannedKeywords,
-                                )
-
-                                if premium_user != True:
-                                    raise Exception(
-                                        "Trying to use ENTERPRISE BannedKeyword"
-                                        + CommonProxyErrors.not_premium_user.value
-                                    )
-
-                                banned_keywords_obj = _ENTERPRISE_BannedKeywords()
-                                imported_list.append(banned_keywords_obj)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "detect_prompt_injection"
-                            ):
-                                from litellm.proxy.hooks.prompt_injection_detection import (
-                                    _OPTIONAL_PromptInjectionDetection,
-                                )
-
-                                prompt_injection_params = None
-                                if "prompt_injection_params" in litellm_settings:
-                                    prompt_injection_params_in_config = (
-                                        litellm_settings["prompt_injection_params"]
-                                    )
-                                    prompt_injection_params = (
-                                        LiteLLMPromptInjectionParams(
-                                            **prompt_injection_params_in_config
-                                        )
-                                    )
-
-                                prompt_injection_detection_obj = (
-                                    _OPTIONAL_PromptInjectionDetection(
-                                        prompt_injection_params=prompt_injection_params,
-                                    )
-                                )
-                                imported_list.append(prompt_injection_detection_obj)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "batch_redis_requests"
-                            ):
-                                from litellm.proxy.hooks.batch_redis_get import (
-                                    _PROXY_BatchRedisRequests,
-                                )
-
-                                batch_redis_obj = _PROXY_BatchRedisRequests()
-                                imported_list.append(batch_redis_obj)
-                            elif (
-                                isinstance(callback, str)
-                                and callback == "azure_content_safety"
-                            ):
-                                from litellm.proxy.hooks.azure_content_safety import (
-                                    _PROXY_AzureContentSafety,
-                                )
-
-                                azure_content_safety_params = litellm_settings[
-                                    "azure_content_safety_params"
-                                ]
-                                for k, v in azure_content_safety_params.items():
-                                    if (
-                                        v is not None
-                                        and isinstance(v, str)
-                                        and v.startswith("os.environ/")
-                                    ):
-                                        azure_content_safety_params[k] = (
-                                            litellm.get_secret(v)
-                                        )
-
-                                azure_content_safety_obj = _PROXY_AzureContentSafety(
-                                    **azure_content_safety_params,
-                                )
-                                imported_list.append(azure_content_safety_obj)
-                            else:
-                                imported_list.append(
-                                    get_instance_fn(
-                                        value=callback,
-                                        config_file_path=config_file_path,
-                                    )
-                                )
-                        litellm.callbacks = imported_list  # type: ignore
-                    else:
-                        litellm.callbacks = [
-                            get_instance_fn(
-                                value=value,
-                                config_file_path=config_file_path,
-                            )
-                        ]
-                    verbose_proxy_logger.debug(
-                        f"{blue_color_code} Initialized Callbacks - {litellm.callbacks} {reset_color_code}"
+                    guardrail_name_config_map = initialize_guardrails(
+                        guardrails_config=value,
+                        premium_user=premium_user,
+                        config_file_path=config_file_path,
+                        litellm_settings=litellm_settings,
                     )
+
+                    litellm.guardrail_name_config_map = guardrail_name_config_map
+                elif key == "callbacks":
+
+                    initialize_callbacks_on_proxy(
+                        value=value,
+                        premium_user=premium_user,
+                        config_file_path=config_file_path,
+                        litellm_settings=litellm_settings,
+                    )
+
                 elif key == "post_call_rules":
                     litellm.post_call_rules = [
                         get_instance_fn(value=value, config_file_path=config_file_path)
@@ -1803,6 +1627,7 @@ class ProxyConfig:
                 alerting=general_settings.get("alerting", None),
                 alerting_threshold=general_settings.get("alerting_threshold", 600),
                 alert_types=general_settings.get("alert_types", None),
+                alert_to_webhook_url=general_settings.get("alert_to_webhook_url", None),
                 alerting_args=general_settings.get("alerting_args", None),
                 redis_cache=redis_usage_cache,
             )
@@ -1854,6 +1679,11 @@ class ProxyConfig:
                 user_custom_key_generate = get_instance_fn(
                     value=custom_key_generate, config_file_path=config_file_path
                 )
+            ## pass through endpoints
+            if general_settings.get("pass_through_endpoints", None) is not None:
+                await initialize_pass_through_endpoints(
+                    pass_through_endpoints=general_settings["pass_through_endpoints"]
+                )
             ## dynamodb
             database_type = general_settings.get("database_type", None)
             if database_type is not None and (
@@ -1885,6 +1715,12 @@ class ProxyConfig:
             ui_access_mode = general_settings.get(
                 "ui_access_mode", "all"
             )  # can be either ["admin_only" or "all"]
+            ### ALLOWED IP ###
+            allowed_ips = general_settings.get("allowed_ips", None)
+            if allowed_ips is not None and premium_user is False:
+                raise ValueError(
+                    "allowed_ips is an Enterprise Feature. Please add a valid LITELLM_LICENSE to your envionment."
+                )
             ## BUDGET RESCHEDULER ##
             proxy_budget_rescheduler_min_time = general_settings.get(
                 "proxy_budget_rescheduler_min_time", proxy_budget_rescheduler_min_time
@@ -1906,6 +1742,7 @@ class ProxyConfig:
                 "background_health_checks", False
             )
             health_check_interval = general_settings.get("health_check_interval", 300)
+            health_check_details = general_settings.get("health_check_details", True)
 
             ## check if user has set a premium feature in general_settings
             if (
@@ -1966,7 +1803,11 @@ class ProxyConfig:
                 if k in available_args:
                     router_params[k] = v
         router = litellm.Router(
-            **router_params, assistants_config=assistants_config
+            **router_params,
+            assistants_config=assistants_config,
+            router_general_settings=RouterGeneralSettings(
+                async_only_mode=True  # only init async clients
+            ),
         )  # type:ignore
         return router, router.get_model_list(), general_settings
 
@@ -2081,16 +1922,8 @@ class ProxyConfig:
                 # decrypt values
                 for k, v in _litellm_params.items():
                     if isinstance(v, str):
-                        # decode base64
-                        try:
-                            decoded_b64 = base64.b64decode(v)
-                        except Exception as e:
-                            verbose_proxy_logger.error(
-                                "Error decoding value - {}".format(v)
-                            )
-                            continue
                         # decrypt value
-                        _value = decrypt_value(value=decoded_b64, master_key=master_key)
+                        _value = decrypt_value_helper(value=v)
                         # sanity check if string > size 0
                         if len(_value) > 0:
                             _litellm_params[k] = _value
@@ -2134,13 +1967,8 @@ class ProxyConfig:
                     if isinstance(_litellm_params, dict):
                         # decrypt values
                         for k, v in _litellm_params.items():
-                            if isinstance(v, str):
-                                # decode base64
-                                decoded_b64 = base64.b64decode(v)
-                                # decrypt value
-                                _litellm_params[k] = decrypt_value(
-                                    value=decoded_b64, master_key=master_key  # type: ignore
-                                )
+                            decrypted_value = decrypt_value_helper(value=v)
+                            _litellm_params[k] = decrypted_value
                         _litellm_params = LiteLLM_Params(**_litellm_params)
                     else:
                         verbose_proxy_logger.error(
@@ -2158,7 +1986,12 @@ class ProxyConfig:
                     )
                 if len(_model_list) > 0:
                     verbose_proxy_logger.debug(f"_model_list: {_model_list}")
-                    llm_router = litellm.Router(model_list=_model_list)
+                    llm_router = litellm.Router(
+                        model_list=_model_list,
+                        router_general_settings=RouterGeneralSettings(
+                            async_only_mode=True  # only init async clients
+                        ),
+                    )
                     verbose_proxy_logger.debug(f"updated llm_router: {llm_router}")
             else:
                 verbose_proxy_logger.debug(f"len new_models: {len(new_models)}")
@@ -2196,10 +2029,8 @@ class ProxyConfig:
         environment_variables = config_data.get("environment_variables", {})
         for k, v in environment_variables.items():
             try:
-                if v is not None:
-                    decoded_b64 = base64.b64decode(v)
-                    value = decrypt_value(value=decoded_b64, master_key=master_key)  # type: ignore
-                    os.environ[k] = value
+                decrypted_value = decrypt_value_helper(value=v)
+                os.environ[k] = decrypted_value
             except Exception as e:
                 verbose_proxy_logger.error(
                     "Error setting env variable: %s - %s", k, str(e)
@@ -2356,7 +2187,7 @@ async def initialize(
     generate_feedback_box()
     user_model = model
     user_debug = debug
-    if debug == True:  # this needs to be first, so users can see Router init debugg
+    if debug is True:  # this needs to be first, so users can see Router init debugg
         import logging
 
         from litellm._logging import (
@@ -2615,7 +2446,7 @@ def giveup(e):
 
 @router.on_event("startup")
 async def startup_event():
-    global prisma_client, master_key, use_background_health_checks, llm_router, llm_model_list, general_settings, proxy_budget_rescheduler_min_time, proxy_budget_rescheduler_max_time, litellm_proxy_admin_name, db_writer_client, store_model_in_db
+    global prisma_client, master_key, use_background_health_checks, llm_router, llm_model_list, general_settings, proxy_budget_rescheduler_min_time, proxy_budget_rescheduler_max_time, litellm_proxy_admin_name, db_writer_client, store_model_in_db, premium_user, _license_check
     import json
 
     ### LOAD MASTER KEY ###
@@ -2644,6 +2475,21 @@ async def startup_event():
         # if not, assume it's a json string
         worker_config = json.loads(os.getenv("WORKER_CONFIG"))
         await initialize(**worker_config)
+
+    ## CHECK PREMIUM USER
+    verbose_proxy_logger.debug(
+        "litellm.proxy.proxy_server.py::startup() - CHECKING PREMIUM USER - {}".format(
+            premium_user
+        )
+    )
+    if premium_user is False:
+        premium_user = _license_check.is_premium()
+
+    verbose_proxy_logger.debug(
+        "litellm.proxy.proxy_server.py::startup() - PREMIUM USER value - {}".format(
+            premium_user
+        )
+    )
 
     ## COST TRACKING ##
     cost_tracking()
@@ -2766,6 +2612,9 @@ async def startup_event():
     ### CHECK IF VIEW EXISTS ###
     if prisma_client is not None:
         create_view_response = await prisma_client.check_view_exists()
+        # Apply misc fixes on DB
+        # [non-blocking] helper to apply fixes from older litellm versions
+        asyncio.create_task(prisma_client.apply_db_fixes())
 
     ### START BATCH WRITING DB + CHECKING NEW MODELS###
     if prisma_client is not None:
@@ -2841,6 +2690,11 @@ async def startup_event():
 def model_list(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
+    """
+    Use `/model/info` - to get detailed model information, example - pricing, mode, etc.
+
+    This is just for compatibility with openai projects like aider.
+    """
     global llm_model_list, general_settings
     all_models = []
     ## CHECK IF MODEL RESTRICTIONS ARE SET AT KEY/TEAM LEVEL ##
@@ -2921,6 +2775,10 @@ async def chat_completion(
         except:
             data = json.loads(body_str)
 
+        verbose_proxy_logger.debug(
+            "Request received by LiteLLM:\n{}".format(json.dumps(data, indent=4)),
+        )
+
         data = await add_litellm_data_to_request(
             data=data,
             request=request,
@@ -2954,8 +2812,16 @@ async def chat_completion(
         if isinstance(data["model"], str) and data["model"] in litellm.model_alias_map:
             data["model"] = litellm.model_alias_map[data["model"]]
 
+        ### CALL HOOKS ### - modify/reject incoming data before calling the model
+        data = await proxy_logging_obj.pre_call_hook(  # type: ignore
+            user_api_key_dict=user_api_key_dict, data=data, call_type="completion"
+        )
+
         ## LOGGING OBJECT ## - initialize logging object for logging success/failure events for call
-        data["litellm_call_id"] = str(uuid.uuid4())
+        ## IMPORTANT Note: - initialize this before running pre-call checks. Ensures we log rejected requests to langfuse.
+        data["litellm_call_id"] = request.headers.get(
+            "x-litellm-call-id", str(uuid.uuid4())
+        )
         logging_obj, data = litellm.utils.function_setup(
             original_function="acompletion",
             rules_obj=litellm.utils.Rules(),
@@ -2964,11 +2830,6 @@ async def chat_completion(
         )
 
         data["litellm_logging_obj"] = logging_obj
-
-        ### CALL HOOKS ### - modify/reject incoming data before calling the model
-        data = await proxy_logging_obj.pre_call_hook(  # type: ignore
-            user_api_key_dict=user_api_key_dict, data=data, call_type="completion"
-        )
 
         tasks = []
         tasks.append(
@@ -3048,26 +2909,34 @@ async def chat_completion(
         model_id = hidden_params.get("model_id", None) or ""
         cache_key = hidden_params.get("cache_key", None) or ""
         api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
         fastest_response_batch_completion = hidden_params.get(
             "fastest_response_batch_completion", None
         )
+        additional_headers: dict = hidden_params.get("additional_headers", {}) or {}
 
         # Post Call Processing
         if llm_router is not None:
             data["deployment"] = llm_router.get_deployment(model_id=model_id)
-        data["litellm_status"] = "success"  # used for alerting
-
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
         if (
             "stream" in data and data["stream"] == True
         ):  # use generate_responses to stream responses
             custom_headers = get_custom_headers(
                 user_api_key_dict=user_api_key_dict,
+                call_id=logging_obj.litellm_call_id,
                 model_id=model_id,
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
                 fastest_response_batch_completion=fastest_response_batch_completion,
+                **additional_headers,
             )
             selected_data_generator = select_data_generator(
                 response=response,
@@ -3085,16 +2954,20 @@ async def chat_completion(
             user_api_key_dict=user_api_key_dict, response=response
         )
 
-        hidden_params = getattr(response, "_hidden_params", {}) or {}
-        additional_headers: dict = hidden_params.get("additional_headers", {}) or {}
+        hidden_params = (
+            getattr(response, "_hidden_params", {}) or {}
+        )  # get any updated response headers
+        additional_headers = hidden_params.get("additional_headers", {}) or {}
 
         fastapi_response.headers.update(
             get_custom_headers(
                 user_api_key_dict=user_api_key_dict,
+                call_id=logging_obj.litellm_call_id,
                 model_id=model_id,
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
                 fastest_response_batch_completion=fastest_response_batch_completion,
                 **additional_headers,
@@ -3104,7 +2977,6 @@ async def chat_completion(
         return response
     except RejectedRequestError as e:
         _data = e.request_data
-        _data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
             original_exception=e,
@@ -3137,7 +3009,6 @@ async def chat_completion(
         _chat_response.usage = _usage  # type: ignore
         return _chat_response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         verbose_proxy_logger.error(
             "litellm.proxy.proxy_server.chat_completion(): Exception occured - {}\n{}".format(
                 get_error_message_str(e=e), traceback.format_exc()
@@ -3155,11 +3026,13 @@ async def chat_completion(
         router_model_names = llm_router.model_names if llm_router is not None else []
 
         if isinstance(e, HTTPException):
+            # print("e.headers={}".format(e.headers))
             raise ProxyException(
                 message=getattr(e, "detail", str(e)),
                 type=getattr(e, "type", "None"),
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
+                headers=getattr(e, "headers", {}),
             )
         error_msg = f"{str(e)}"
         raise ProxyException(
@@ -3290,9 +3163,15 @@ async def completion(
         model_id = hidden_params.get("model_id", None) or ""
         cache_key = hidden_params.get("cache_key", None) or ""
         api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
+        litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         verbose_proxy_logger.debug("final response: %s", response)
         if (
@@ -3300,10 +3179,12 @@ async def completion(
         ):  # use generate_responses to stream responses
             custom_headers = get_custom_headers(
                 user_api_key_dict=user_api_key_dict,
+                call_id=litellm_call_id,
                 model_id=model_id,
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
             )
             selected_data_generator = select_data_generator(
                 response=response,
@@ -3319,17 +3200,18 @@ async def completion(
         fastapi_response.headers.update(
             get_custom_headers(
                 user_api_key_dict=user_api_key_dict,
+                call_id=litellm_call_id,
                 model_id=model_id,
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
             )
         )
 
         return response
     except RejectedRequestError as e:
         _data = e.request_data
-        _data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
             original_exception=e,
@@ -3368,7 +3250,6 @@ async def completion(
             _response.choices[0].text = e.message
             return _response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -3399,6 +3280,12 @@ async def completion(
     response_class=ORJSONResponse,
     tags=["embeddings"],
 )
+@router.post(
+    "/engines/{model:path}/embeddings",
+    dependencies=[Depends(user_api_key_auth)],
+    response_class=ORJSONResponse,
+    tags=["embeddings"],
+)  # azure compatible endpoint
 @router.post(
     "/openai/deployments/{model:path}/embeddings",
     dependencies=[Depends(user_api_key_auth)],
@@ -3473,43 +3360,52 @@ async def embeddings(
             user_api_key_dict=user_api_key_dict, data=data, call_type="embeddings"
         )
 
+        tasks = []
+        tasks.append(
+            proxy_logging_obj.during_call_hook(
+                data=data,
+                user_api_key_dict=user_api_key_dict,
+                call_type="embeddings",
+            )
+        )
+
         ## ROUTE TO CORRECT ENDPOINT ##
         # skip router if user passed their key
         if "api_key" in data:
-            response = await litellm.aembedding(**data)
+            tasks.append(litellm.aembedding(**data))
         elif "user_config" in data:
             # initialize a new router instance. make request using this Router
             router_config = data.pop("user_config")
             user_router = litellm.Router(**router_config)
-            response = await user_router.aembedding(**data)
+            tasks.append(user_router.aembedding(**data))
         elif (
             llm_router is not None and data["model"] in router_model_names
         ):  # model in router model list
-            response = await llm_router.aembedding(**data)
+            tasks.append(llm_router.aembedding(**data))
         elif (
             llm_router is not None
             and llm_router.model_group_alias is not None
             and data["model"] in llm_router.model_group_alias
         ):  # model set in model_group_alias
-            response = await llm_router.aembedding(
-                **data
+            tasks.append(
+                llm_router.aembedding(**data)
             )  # ensure this goes the llm_router, router will do the correct alias mapping
         elif (
             llm_router is not None and data["model"] in llm_router.deployment_names
         ):  # model in router deployments, calling a specific deployment on the router
-            response = await llm_router.aembedding(**data, specific_deployment=True)
+            tasks.append(llm_router.aembedding(**data, specific_deployment=True))
         elif (
             llm_router is not None and data["model"] in llm_router.get_model_ids()
         ):  # model in router deployments, calling a specific deployment on the router
-            response = await llm_router.aembedding(**data)
+            tasks.append(llm_router.aembedding(**data))
         elif (
             llm_router is not None
             and data["model"] not in router_model_names
             and llm_router.default_deployment is not None
         ):  # model in router deployments, calling a specific deployment on the router
-            response = await llm_router.aembedding(**data)
+            tasks.append(llm_router.aembedding(**data))
         elif user_model is not None:  # `litellm --model <your-model-name>`
-            response = await litellm.aembedding(**data)
+            tasks.append(litellm.aembedding(**data))
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -3519,14 +3415,29 @@ async def embeddings(
                 },
             )
 
+        # wait for call to end
+        llm_responses = asyncio.gather(
+            *tasks
+        )  # run the moderation check in parallel to the actual llm api call
+
+        responses = await llm_responses
+
+        response = responses[1]
+
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
         model_id = hidden_params.get("model_id", None) or ""
         cache_key = hidden_params.get("cache_key", None) or ""
         api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
+        litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
 
         fastapi_response.headers.update(
             get_custom_headers(
@@ -3535,13 +3446,14 @@ async def embeddings(
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
+                call_id=litellm_call_id,
             )
         )
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -3558,8 +3470,9 @@ async def embeddings(
         )
         verbose_proxy_logger.debug(traceback.format_exc())
         if isinstance(e, HTTPException):
+            message = get_error_message_str(e)
             raise ProxyException(
-                message=getattr(e, "message", str(e)),
+                message=message,
                 type=getattr(e, "type", "None"),
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
@@ -3669,13 +3582,18 @@ async def image_generation(
             )
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
-
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
         model_id = hidden_params.get("model_id", None) or ""
         cache_key = hidden_params.get("cache_key", None) or ""
         api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
+        litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
 
         fastapi_response.headers.update(
             get_custom_headers(
@@ -3684,13 +3602,14 @@ async def image_generation(
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
+                call_id=litellm_call_id,
             )
         )
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -3805,13 +3724,19 @@ async def audio_speech(
             )
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
         model_id = hidden_params.get("model_id", None) or ""
         cache_key = hidden_params.get("cache_key", None) or ""
         api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
+        litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
 
         # Printing each chunk size
         async def generate(_response: HttpxBinaryResponseContent):
@@ -3825,8 +3750,10 @@ async def audio_speech(
             cache_key=cache_key,
             api_base=api_base,
             version=version,
+            response_cost=response_cost,
             model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
             fastest_response_batch_completion=None,
+            call_id=litellm_call_id,
         )
 
         selected_data_generator = select_data_generator(
@@ -3899,83 +3826,91 @@ async def audio_transcriptions(
 
         router_model_names = llm_router.model_names if llm_router is not None else []
 
-        assert (
-            file.filename is not None
-        )  # make sure filename passed in (needed for type)
+        if file.filename is None:
+            raise ProxyException(
+                message="File name is None. Please check your file name",
+                code=status.HTTP_400_BAD_REQUEST,
+                type="bad_request",
+                param="file",
+            )
 
-        _original_filename = file.filename
-        file_extension = os.path.splitext(file.filename)[1]
-        # rename the file to a random hash file name -> we eventuall remove the file and don't want to remove any local files
-        file.filename = f"tmp-request" + str(uuid.uuid4()) + file_extension
+        # Check if File can be read in memory before reading
+        check_file_size_under_limit(
+            request_data=data,
+            file=file,
+            router_model_names=router_model_names,
+        )
 
-        # IMP - Asserts that we've renamed the uploaded file, since we run os.remove(file.filename), we should rename the original file
-        assert file.filename != _original_filename
+        file_content = await file.read()
+        file_object = io.BytesIO(file_content)
+        file_object.name = file.filename
+        data["file"] = file_object
+        try:
+            ### CALL HOOKS ### - modify incoming data / reject request before calling the model
+            data = await proxy_logging_obj.pre_call_hook(
+                user_api_key_dict=user_api_key_dict,
+                data=data,
+                call_type="audio_transcription",
+            )
 
-        with open(file.filename, "wb+") as f:
-            f.write(await file.read())
-            try:
-                data["file"] = open(file.filename, "rb")
-                ### CALL HOOKS ### - modify incoming data / reject request before calling the model
-                data = await proxy_logging_obj.pre_call_hook(
-                    user_api_key_dict=user_api_key_dict,
-                    data=data,
-                    call_type="audio_transcription",
+            ## ROUTE TO CORRECT ENDPOINT ##
+            # skip router if user passed their key
+            if "api_key" in data:
+                response = await litellm.atranscription(**data)
+            elif (
+                llm_router is not None and data["model"] in router_model_names
+            ):  # model in router model list
+                response = await llm_router.atranscription(**data)
+
+            elif (
+                llm_router is not None and data["model"] in llm_router.deployment_names
+            ):  # model in router deployments, calling a specific deployment on the router
+                response = await llm_router.atranscription(
+                    **data, specific_deployment=True
                 )
-
-                ## ROUTE TO CORRECT ENDPOINT ##
-                # skip router if user passed their key
-                if "api_key" in data:
-                    response = await litellm.atranscription(**data)
-                elif (
-                    llm_router is not None and data["model"] in router_model_names
-                ):  # model in router model list
-                    response = await llm_router.atranscription(**data)
-
-                elif (
-                    llm_router is not None
-                    and data["model"] in llm_router.deployment_names
-                ):  # model in router deployments, calling a specific deployment on the router
-                    response = await llm_router.atranscription(
-                        **data, specific_deployment=True
-                    )
-                elif (
-                    llm_router is not None
-                    and llm_router.model_group_alias is not None
-                    and data["model"] in llm_router.model_group_alias
-                ):  # model set in model_group_alias
-                    response = await llm_router.atranscription(
-                        **data
-                    )  # ensure this goes the llm_router, router will do the correct alias mapping
-                elif (
-                    llm_router is not None
-                    and data["model"] not in router_model_names
-                    and llm_router.default_deployment is not None
-                ):  # model in router deployments, calling a specific deployment on the router
-                    response = await llm_router.atranscription(**data)
-                elif user_model is not None:  # `litellm --model <your-model-name>`
-                    response = await litellm.atranscription(**data)
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail={
-                            "error": "audio_transcriptions: Invalid model name passed in model="
-                            + data.get("model", "")
-                        },
-                    )
-
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
-            finally:
-                os.remove(file.filename)  # Delete the saved file
+            elif (
+                llm_router is not None
+                and llm_router.model_group_alias is not None
+                and data["model"] in llm_router.model_group_alias
+            ):  # model set in model_group_alias
+                response = await llm_router.atranscription(
+                    **data
+                )  # ensure this goes the llm_router, router will do the correct alias mapping
+            elif (
+                llm_router is not None
+                and data["model"] not in router_model_names
+                and llm_router.default_deployment is not None
+            ):  # model in router deployments, calling a specific deployment on the router
+                response = await llm_router.atranscription(**data)
+            elif user_model is not None:  # `litellm --model <your-model-name>`
+                response = await litellm.atranscription(**data)
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "audio_transcriptions: Invalid model name passed in model="
+                        + data.get("model", "")
+                    },
+                )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            file_object.close()  # close the file read in by io library
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
         model_id = hidden_params.get("model_id", None) or ""
         cache_key = hidden_params.get("cache_key", None) or ""
         api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
+        litellm_call_id = hidden_params.get("litellm_call_id", None) or ""
 
         fastapi_response.headers.update(
             get_custom_headers(
@@ -3984,13 +3919,14 @@ async def audio_transcriptions(
                 cache_key=cache_key,
                 api_base=api_base,
                 version=version,
+                response_cost=response_cost,
                 model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
+                call_id=litellm_call_id,
             )
         )
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4069,7 +4005,11 @@ async def get_assistants(
         response = await llm_router.aget_assistants(**data)
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4090,12 +4030,201 @@ async def get_assistants(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
         verbose_proxy_logger.error(
             "litellm.proxy.proxy_server.get_assistants(): Exception occured - {}".format(
+                str(e)
+            )
+        )
+        verbose_proxy_logger.debug(traceback.format_exc())
+        if isinstance(e, HTTPException):
+            raise ProxyException(
+                message=getattr(e, "message", str(e.detail)),
+                type=getattr(e, "type", "None"),
+                param=getattr(e, "param", "None"),
+                code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
+            )
+        else:
+            error_msg = f"{str(e)}"
+            raise ProxyException(
+                message=getattr(e, "message", error_msg),
+                type=getattr(e, "type", "None"),
+                param=getattr(e, "param", "None"),
+                code=getattr(e, "status_code", 500),
+            )
+
+
+@router.post(
+    "/v1/assistants",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["assistants"],
+)
+@router.post(
+    "/assistants",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["assistants"],
+)
+async def create_assistant(
+    request: Request,
+    fastapi_response: Response,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Create assistant
+
+    API Reference docs - https://platform.openai.com/docs/api-reference/assistants/createAssistant
+    """
+    global proxy_logging_obj
+    try:
+        # Use orjson to parse JSON data, orjson speeds up requests significantly
+        body = await request.body()
+        data = orjson.loads(body)
+
+        # Include original request and headers in the data
+        data = await add_litellm_data_to_request(
+            data=data,
+            request=request,
+            general_settings=general_settings,
+            user_api_key_dict=user_api_key_dict,
+            version=version,
+            proxy_config=proxy_config,
+        )
+
+        # for now use custom_llm_provider=="openai" -> this will change as LiteLLM adds more providers for acreate_batch
+        if llm_router is None:
+            raise HTTPException(
+                status_code=500, detail={"error": CommonProxyErrors.no_llm_router.value}
+            )
+        response = await llm_router.acreate_assistants(**data)
+
+        ### ALERTING ###
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
+
+        ### RESPONSE HEADERS ###
+        hidden_params = getattr(response, "_hidden_params", {}) or {}
+        model_id = hidden_params.get("model_id", None) or ""
+        cache_key = hidden_params.get("cache_key", None) or ""
+        api_base = hidden_params.get("api_base", None) or ""
+
+        fastapi_response.headers.update(
+            get_custom_headers(
+                user_api_key_dict=user_api_key_dict,
+                model_id=model_id,
+                cache_key=cache_key,
+                api_base=api_base,
+                version=version,
+                model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
+            )
+        )
+
+        return response
+    except Exception as e:
+        await proxy_logging_obj.post_call_failure_hook(
+            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
+        )
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.create_assistant(): Exception occured - {}".format(
+                str(e)
+            )
+        )
+        verbose_proxy_logger.debug(traceback.format_exc())
+        if isinstance(e, HTTPException):
+            raise ProxyException(
+                message=getattr(e, "message", str(e.detail)),
+                type=getattr(e, "type", "None"),
+                param=getattr(e, "param", "None"),
+                code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
+            )
+        else:
+            error_msg = f"{str(e)}"
+            raise ProxyException(
+                message=getattr(e, "message", error_msg),
+                type=getattr(e, "type", "None"),
+                param=getattr(e, "param", "None"),
+                code=getattr(e, "status_code", 500),
+            )
+
+
+@router.delete(
+    "/v1/assistants/{assistant_id:path}",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["assistants"],
+)
+@router.delete(
+    "/assistants/{assistant_id:path}",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["assistants"],
+)
+async def delete_assistant(
+    request: Request,
+    assistant_id: str,
+    fastapi_response: Response,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Delete assistant
+
+    API Reference docs - https://platform.openai.com/docs/api-reference/assistants/createAssistant
+    """
+    global proxy_logging_obj
+    data: Dict = {}
+    try:
+        # Use orjson to parse JSON data, orjson speeds up requests significantly
+
+        # Include original request and headers in the data
+        data = await add_litellm_data_to_request(
+            data=data,
+            request=request,
+            general_settings=general_settings,
+            user_api_key_dict=user_api_key_dict,
+            version=version,
+            proxy_config=proxy_config,
+        )
+
+        # for now use custom_llm_provider=="openai" -> this will change as LiteLLM adds more providers for acreate_batch
+        if llm_router is None:
+            raise HTTPException(
+                status_code=500, detail={"error": CommonProxyErrors.no_llm_router.value}
+            )
+        response = await llm_router.adelete_assistant(assistant_id=assistant_id, **data)
+
+        ### ALERTING ###
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
+
+        ### RESPONSE HEADERS ###
+        hidden_params = getattr(response, "_hidden_params", {}) or {}
+        model_id = hidden_params.get("model_id", None) or ""
+        cache_key = hidden_params.get("cache_key", None) or ""
+        api_base = hidden_params.get("api_base", None) or ""
+
+        fastapi_response.headers.update(
+            get_custom_headers(
+                user_api_key_dict=user_api_key_dict,
+                model_id=model_id,
+                cache_key=cache_key,
+                api_base=api_base,
+                version=version,
+                model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
+            )
+        )
+
+        return response
+    except Exception as e:
+        await proxy_logging_obj.post_call_failure_hook(
+            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
+        )
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.delete_assistant(): Exception occured - {}".format(
                 str(e)
             )
         )
@@ -4161,7 +4290,11 @@ async def create_threads(
         response = await llm_router.acreate_thread(**data)
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4182,7 +4315,6 @@ async def create_threads(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4252,7 +4384,11 @@ async def get_thread(
         response = await llm_router.aget_thread(thread_id=thread_id, **data)
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4273,7 +4409,6 @@ async def get_thread(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4346,7 +4481,11 @@ async def add_messages(
         response = await llm_router.a_add_message(thread_id=thread_id, **data)
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4367,7 +4506,6 @@ async def add_messages(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4436,7 +4574,11 @@ async def get_messages(
         response = await llm_router.aget_messages(thread_id=thread_id, **data)
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4457,7 +4599,6 @@ async def get_messages(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4540,7 +4681,11 @@ async def run_thread(
             )
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4561,7 +4706,6 @@ async def run_thread(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4651,7 +4795,11 @@ async def create_batch(
         )
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4672,7 +4820,6 @@ async def create_batch(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4757,7 +4904,11 @@ async def retrieve_batch(
         )
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -4778,7 +4929,6 @@ async def retrieve_batch(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -4811,114 +4961,6 @@ async def retrieve_batch(
 #            END OF  /v1/batches Endpoints Implementation
 
 ######################################################################
-
-######################################################################
-
-#                          /v1/files Endpoints
-
-
-######################################################################
-@router.post(
-    "/v1/files",
-    dependencies=[Depends(user_api_key_auth)],
-    tags=["files"],
-)
-@router.post(
-    "/files",
-    dependencies=[Depends(user_api_key_auth)],
-    tags=["files"],
-)
-async def create_file(
-    request: Request,
-    fastapi_response: Response,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
-):
-    """
-    Upload a file that can be used across - Assistants API, Batch API 
-    This is the equivalent of POST https://api.openai.com/v1/files
-
-    Supports Identical Params as: https://platform.openai.com/docs/api-reference/files/create
-
-    Example Curl
-    ```
-    curl https://api.openai.com/v1/files \
-        -H "Authorization: Bearer sk-1234" \
-        -F purpose="batch" \
-        -F file="@mydata.jsonl"
-
-    ```
-    """
-    global proxy_logging_obj
-    data: Dict = {}
-    try:
-        # Use orjson to parse JSON data, orjson speeds up requests significantly
-        form_data = await request.form()
-        data = {key: value for key, value in form_data.items() if key != "file"}
-
-        # Include original request and headers in the data
-        data = await add_litellm_data_to_request(
-            data=data,
-            request=request,
-            general_settings=general_settings,
-            user_api_key_dict=user_api_key_dict,
-            version=version,
-            proxy_config=proxy_config,
-        )
-
-        _create_file_request = CreateFileRequest()
-
-        # for now use custom_llm_provider=="openai" -> this will change as LiteLLM adds more providers for acreate_batch
-        response = await litellm.acreate_file(
-            custom_llm_provider="openai", **_create_file_request
-        )
-
-        ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
-
-        ### RESPONSE HEADERS ###
-        hidden_params = getattr(response, "_hidden_params", {}) or {}
-        model_id = hidden_params.get("model_id", None) or ""
-        cache_key = hidden_params.get("cache_key", None) or ""
-        api_base = hidden_params.get("api_base", None) or ""
-
-        fastapi_response.headers.update(
-            get_custom_headers(
-                user_api_key_dict=user_api_key_dict,
-                model_id=model_id,
-                cache_key=cache_key,
-                api_base=api_base,
-                version=version,
-                model_region=getattr(user_api_key_dict, "allowed_model_region", ""),
-            )
-        )
-
-        return response
-    except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
-        await proxy_logging_obj.post_call_failure_hook(
-            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
-        )
-        verbose_proxy_logger.error(
-            "litellm.proxy.proxy_server.create_file(): Exception occured - {}".format(
-                str(e)
-            )
-        )
-        verbose_proxy_logger.debug(traceback.format_exc())
-        if isinstance(e, HTTPException):
-            raise ProxyException(
-                message=getattr(e, "message", str(e.detail)),
-                type=getattr(e, "type", "None"),
-                param=getattr(e, "param", "None"),
-                code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
-            )
-        else:
-            error_msg = f"{str(e)}"
-            raise ProxyException(
-                message=getattr(e, "message", error_msg),
-                type=getattr(e, "type", "None"),
-                param=getattr(e, "param", "None"),
-                code=getattr(e, "status_code", 500),
-            )
 
 
 @router.post(
@@ -5017,7 +5059,11 @@ async def moderations(
             response = await litellm.amoderation(**data)
 
         ### ALERTING ###
-        data["litellm_status"] = "success"  # used for alerting
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
 
         ### RESPONSE HEADERS ###
         hidden_params = getattr(response, "_hidden_params", {}) or {}
@@ -5038,7 +5084,6 @@ async def moderations(
 
         return response
     except Exception as e:
-        data["litellm_status"] = "fail"  # used for alerting
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
@@ -5063,6 +5108,198 @@ async def moderations(
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", 500),
             )
+
+
+#### ANTHROPIC ENDPOINTS ####
+
+
+@router.post(
+    "/v1/messages",
+    tags=["[beta] Anthropic `/v1/messages`"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=AnthropicResponse,
+)
+async def anthropic_response(
+    anthropic_data: AnthropicMessagesRequest,
+    fastapi_response: Response,
+    request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    from litellm import adapter_completion
+    from litellm.adapters.anthropic_adapter import anthropic_adapter
+
+    litellm.adapters = [{"id": "anthropic", "adapter": anthropic_adapter}]
+
+    global user_temperature, user_request_timeout, user_max_tokens, user_api_base
+    data: dict = {**anthropic_data, "adapter_id": "anthropic"}
+    try:
+        data["model"] = (
+            general_settings.get("completion_model", None)  # server default
+            or user_model  # model name passed via cli args
+            or data["model"]  # default passed in http request
+        )
+        if user_model:
+            data["model"] = user_model
+
+        data = await add_litellm_data_to_request(
+            data=data,  # type: ignore
+            request=request,
+            general_settings=general_settings,
+            user_api_key_dict=user_api_key_dict,
+            version=version,
+            proxy_config=proxy_config,
+        )
+
+        # override with user settings, these are params passed via cli
+        if user_temperature:
+            data["temperature"] = user_temperature
+        if user_request_timeout:
+            data["request_timeout"] = user_request_timeout
+        if user_max_tokens:
+            data["max_tokens"] = user_max_tokens
+        if user_api_base:
+            data["api_base"] = user_api_base
+
+        ### MODEL ALIAS MAPPING ###
+        # check if model name in model alias map
+        # get the actual model name
+        if data["model"] in litellm.model_alias_map:
+            data["model"] = litellm.model_alias_map[data["model"]]
+
+        ### CALL HOOKS ### - modify incoming data before calling the model
+        data = await proxy_logging_obj.pre_call_hook(  # type: ignore
+            user_api_key_dict=user_api_key_dict, data=data, call_type="text_completion"
+        )
+
+        ### ROUTE THE REQUESTs ###
+        router_model_names = llm_router.model_names if llm_router is not None else []
+        # skip router if user passed their key
+        if "api_key" in data:
+            llm_response = asyncio.create_task(litellm.aadapter_completion(**data))
+        elif (
+            llm_router is not None and data["model"] in router_model_names
+        ):  # model in router model list
+            llm_response = asyncio.create_task(llm_router.aadapter_completion(**data))
+        elif (
+            llm_router is not None
+            and llm_router.model_group_alias is not None
+            and data["model"] in llm_router.model_group_alias
+        ):  # model set in model_group_alias
+            llm_response = asyncio.create_task(llm_router.aadapter_completion(**data))
+        elif (
+            llm_router is not None and data["model"] in llm_router.deployment_names
+        ):  # model in router deployments, calling a specific deployment on the router
+            llm_response = asyncio.create_task(
+                llm_router.aadapter_completion(**data, specific_deployment=True)
+            )
+        elif (
+            llm_router is not None and data["model"] in llm_router.get_model_ids()
+        ):  # model in router model list
+            llm_response = asyncio.create_task(llm_router.aadapter_completion(**data))
+        elif (
+            llm_router is not None
+            and data["model"] not in router_model_names
+            and llm_router.default_deployment is not None
+        ):  # model in router deployments, calling a specific deployment on the router
+            llm_response = asyncio.create_task(llm_router.aadapter_completion(**data))
+        elif user_model is not None:  # `litellm --model <your-model-name>`
+            llm_response = asyncio.create_task(litellm.aadapter_completion(**data))
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "completion: Invalid model name passed in model="
+                    + data.get("model", "")
+                },
+            )
+
+        # Await the llm_response task
+        response = await llm_response
+
+        hidden_params = getattr(response, "_hidden_params", {}) or {}
+        model_id = hidden_params.get("model_id", None) or ""
+        cache_key = hidden_params.get("cache_key", None) or ""
+        api_base = hidden_params.get("api_base", None) or ""
+        response_cost = hidden_params.get("response_cost", None) or ""
+
+        ### ALERTING ###
+        asyncio.create_task(
+            proxy_logging_obj.update_request_status(
+                litellm_call_id=data.get("litellm_call_id", ""), status="success"
+            )
+        )
+
+        verbose_proxy_logger.debug("final response: %s", response)
+
+        fastapi_response.headers.update(
+            get_custom_headers(
+                user_api_key_dict=user_api_key_dict,
+                model_id=model_id,
+                cache_key=cache_key,
+                api_base=api_base,
+                version=version,
+                response_cost=response_cost,
+            )
+        )
+
+        verbose_proxy_logger.info("\nResponse from Litellm:\n{}".format(response))
+        return response
+    except RejectedRequestError as e:
+        _data = e.request_data
+        await proxy_logging_obj.post_call_failure_hook(
+            user_api_key_dict=user_api_key_dict,
+            original_exception=e,
+            request_data=_data,
+        )
+        if _data.get("stream", None) is not None and _data["stream"] == True:
+            _chat_response = litellm.ModelResponse()
+            _usage = litellm.Usage(
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+            )
+            _chat_response.usage = _usage  # type: ignore
+            _chat_response.choices[0].message.content = e.message  # type: ignore
+            _iterator = litellm.utils.ModelResponseIterator(
+                model_response=_chat_response, convert_to_delta=True
+            )
+            _streaming_response = litellm.TextCompletionStreamWrapper(
+                completion_stream=_iterator,
+                model=_data.get("model", ""),
+            )
+
+            selected_data_generator = select_data_generator(
+                response=_streaming_response,
+                user_api_key_dict=user_api_key_dict,
+                request_data=data,
+            )
+
+            return StreamingResponse(
+                selected_data_generator,
+                media_type="text/event-stream",
+                headers={},
+            )
+        else:
+            _response = litellm.TextCompletionResponse()
+            _response.choices[0].text = e.message
+            return _response
+    except Exception as e:
+        await proxy_logging_obj.post_call_failure_hook(
+            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
+        )
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.completion(): Exception occured - {}".format(
+                str(e)
+            )
+        )
+        verbose_proxy_logger.debug(traceback.format_exc())
+        error_msg = f"{str(e)}"
+        raise ProxyException(
+            message=getattr(e, "message", error_msg),
+            type=getattr(e, "type", "None"),
+            param=getattr(e, "param", "None"),
+            code=getattr(e, "status_code", 500),
+        )
 
 
 #### DEV UTILS ####
@@ -5278,8 +5515,19 @@ async def new_end_user(
 ):
     """
     Allow creating a new Customer 
-    NOTE: This used to be called `/end_user/new`, we will still be maintaining compatibility for /end_user/XXX for these endpoints
 
+
+    Parameters:
+    - user_id: str - The unique identifier for the user.
+    - alias: Optional[str] - A human-friendly alias for the user.
+    - blocked: bool - Flag to allow or disallow requests for this end-user. Default is False.
+    - max_budget: Optional[float] - The maximum budget allocated to the user. Either 'max_budget' or 'budget_id' should be provided, not both.
+    - budget_id: Optional[str] - The identifier for an existing budget allocated to the user. Either 'max_budget' or 'budget_id' should be provided, not both.
+    - allowed_model_region: Optional[Literal["eu"]] - Require all user requests to use models in this specific region.
+    - default_model: Optional[str] - If no equivalent model in the allowed region, default all requests to this model.
+    - metadata: Optional[dict] = Metadata for customer, store information for customer. Example metadata = {"data_training_opt_out": True}
+    
+    
     - Allow specifying allowed regions 
     - Allow specifying default model
 
@@ -5297,6 +5545,8 @@ async def new_end_user(
 
         # return end-user object
     ```
+
+    NOTE: This used to be called `/end_user/new`, we will still be maintaining compatibility for /end_user/XXX for these endpoints
     """
     global prisma_client, llm_router
     """
@@ -6071,11 +6321,8 @@ async def add_new_model(
             _litellm_params_dict = model_params.litellm_params.dict(exclude_none=True)
             _orignal_litellm_model_name = model_params.litellm_params.model
             for k, v in _litellm_params_dict.items():
-                if isinstance(v, str):
-                    encrypted_value = encrypt_value(value=v, master_key=master_key)  # type: ignore
-                    model_params.litellm_params[k] = base64.b64encode(
-                        encrypted_value
-                    ).decode("utf-8")
+                encrypted_value = encrypt_value_helper(value=v)
+                model_params.litellm_params[k] = encrypted_value
             _data: dict = {
                 "model_id": model_params.model_info.id,
                 "model_name": model_params.model_name,
@@ -6128,7 +6375,7 @@ async def add_new_model(
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
@@ -6136,7 +6383,7 @@ async def add_new_model(
             raise e
         raise ProxyException(
             message="Authentication Error, " + str(e),
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param=getattr(e, "param", "None"),
             code=status.HTTP_400_BAD_REQUEST,
         )
@@ -6206,11 +6453,8 @@ async def update_model(
 
             ### ENCRYPT PARAMS ###
             for k, v in _new_litellm_params_dict.items():
-                if isinstance(v, str):
-                    encrypted_value = encrypt_value(value=v, master_key=master_key)  # type: ignore
-                    model_params.litellm_params[k] = base64.b64encode(
-                        encrypted_value
-                    ).decode("utf-8")
+                encrypted_value = encrypt_value_helper(value=v)
+                model_params.litellm_params[k] = encrypted_value
 
             ### MERGE WITH EXISTING DATA ###
             merged_dictionary = {}
@@ -6247,7 +6491,7 @@ async def update_model(
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
@@ -6255,7 +6499,7 @@ async def update_model(
             raise e
         raise ProxyException(
             message="Authentication Error, " + str(e),
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param=getattr(e, "param", "None"),
             code=status.HTTP_400_BAD_REQUEST,
         )
@@ -6284,7 +6528,7 @@ async def model_info_v2(
         raise HTTPException(
             status_code=500,
             detail={
-                "error": f"Invalid llm model list. llm_model_list={llm_model_list}"
+                "error": f"No model list passed, models={llm_model_list}. You can add a model through the config.yaml or on the LiteLLM Admin UI."
             },
         )
 
@@ -6790,25 +7034,80 @@ async def model_metrics_exceptions(
 
 @router.get(
     "/model/info",
-    description="Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)",
     tags=["model management"],
     dependencies=[Depends(user_api_key_auth)],
 )
 @router.get(
     "/v1/model/info",
-    description="Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)",
     tags=["model management"],
     dependencies=[Depends(user_api_key_auth)],
 )
 async def model_info_v1(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    litellm_model_id: Optional[str] = None,
 ):
-    global llm_model_list, general_settings, user_config_file_path, proxy_config
+    """
+    Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
+
+    Parameters:
+        litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
+
+        - When litellm_model_id is passed, it will return the info for that specific model
+        - When litellm_model_id is not passed, it will return the info for all models
+
+    Returns:
+        Returns a dictionary containing information about each model.
+
+    Example Response:
+    ```json
+    {
+        "data": [
+                    {
+                        "model_name": "fake-openai-endpoint",
+                        "litellm_params": {
+                            "api_base": "https://exampleopenaiendpoint-production.up.railway.app/",
+                            "model": "openai/fake"
+                        },
+                        "model_info": {
+                            "id": "112f74fab24a7a5245d2ced3536dd8f5f9192c57ee6e332af0f0512e08bed5af",
+                            "db_model": false
+                        }
+                    }
+                ]
+    }
+
+    ```
+    """
+    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router
 
     if llm_model_list is None:
         raise HTTPException(
             status_code=500, detail={"error": "LLM Model List not loaded in"}
         )
+
+    if llm_router is None:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "LLM Router is not loaded in. Make sure you passed models in your config.yaml or on the LiteLLM Admin UI."
+            },
+        )
+
+    if litellm_model_id is not None:
+        # user is trying to get specific model from litellm router
+        deployment_info = llm_router.get_deployment(model_id=litellm_model_id)
+        if deployment_info is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": f"Model id = {litellm_model_id} not found on litellm proxy"
+                },
+            )
+        _deployment_info_dict = deployment_info.model_dump()
+        _deployment_info_dict = remove_sensitive_info_from_deployment(
+            deployment_dict=_deployment_info_dict
+        )
+        return {"data": _deployment_info_dict}
 
     all_models: List[dict] = []
     ## CHECK IF MODEL RESTRICTIONS ARE SET AT KEY/TEAM LEVEL ##
@@ -6871,10 +7170,7 @@ async def model_info_v1(
                 model_info[k] = v
         model["model_info"] = model_info
         # don't return the llm credentials
-        model["litellm_params"].pop("api_key", None)
-        model["litellm_params"].pop("vertex_credentials", None)
-        model["litellm_params"].pop("aws_access_key_id", None)
-        model["litellm_params"].pop("aws_secret_access_key", None)
+        model = remove_sensitive_info_from_deployment(deployment_dict=model)
 
     verbose_proxy_logger.debug("all_models: %s", all_models)
     return {"data": all_models}
@@ -6993,7 +7289,7 @@ async def delete_model(model_info: ModelInfoDelete):
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
@@ -7001,7 +7297,7 @@ async def delete_model(model_info: ModelInfoDelete):
             raise e
         raise ProxyException(
             message="Authentication Error, " + str(e),
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param=getattr(e, "param", "None"),
             code=status.HTTP_400_BAD_REQUEST,
         )
@@ -7231,7 +7527,7 @@ async def async_queue_request(
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
@@ -7239,7 +7535,7 @@ async def async_queue_request(
             raise e
         raise ProxyException(
             message="Authentication Error, " + str(e),
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param=getattr(e, "param", "None"),
             code=status.HTTP_400_BAD_REQUEST,
         )
@@ -7270,16 +7566,15 @@ async def google_login(request: Request):
         if premium_user != True:
             raise ProxyException(
                 message="You must be a LiteLLM Enterprise user to use SSO. If you have a license please set `LITELLM_LICENSE` in your env. If you want to obtain a license meet with us here: https://calendly.com/d/4mp-gd3-k5k/litellm-1-1-onboarding-chat You are seeing this error message because You set one of `MICROSOFT_CLIENT_ID`, `GOOGLE_CLIENT_ID`, or `GENERIC_CLIENT_ID` in your env. Please unset this",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="premium_user",
                 code=status.HTTP_403_FORBIDDEN,
             )
 
     ####### Detect DB + MASTER KEY in .env #######
-    if prisma_client is None or master_key is None:
-        from fastapi.responses import HTMLResponse
-
-        return HTMLResponse(content=missing_keys_html_form, status_code=200)
+    missing_env_vars = show_missing_vars_in_env()
+    if missing_env_vars is not None:
+        return missing_env_vars
 
     # get url from request
     redirect_url = os.getenv("PROXY_BASE_URL", str(request.base_url))
@@ -7296,7 +7591,7 @@ async def google_login(request: Request):
         if google_client_secret is None:
             raise ProxyException(
                 message="GOOGLE_CLIENT_SECRET not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GOOGLE_CLIENT_SECRET",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -7319,7 +7614,7 @@ async def google_login(request: Request):
         if microsoft_client_secret is None:
             raise ProxyException(
                 message="MICROSOFT_CLIENT_SECRET not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="MICROSOFT_CLIENT_SECRET",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -7345,28 +7640,28 @@ async def google_login(request: Request):
         if generic_client_secret is None:
             raise ProxyException(
                 message="GENERIC_CLIENT_SECRET not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_CLIENT_SECRET",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if generic_authorization_endpoint is None:
             raise ProxyException(
                 message="GENERIC_AUTHORIZATION_ENDPOINT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_AUTHORIZATION_ENDPOINT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if generic_token_endpoint is None:
             raise ProxyException(
                 message="GENERIC_TOKEN_ENDPOINT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_TOKEN_ENDPOINT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if generic_userinfo_endpoint is None:
             raise ProxyException(
                 message="GENERIC_USERINFO_ENDPOINT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_USERINFO_ENDPOINT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -7451,7 +7746,7 @@ async def login(request: Request):
     if master_key is None:
         raise ProxyException(
             message="Master Key not set for Proxy. Please set Master Key to use Admin UI. Set `LITELLM_MASTER_KEY` in .env or set general_settings:master_key in config.yaml.  https://docs.litellm.ai/docs/proxy/virtual_keys. If set, use `--detailed_debug` to debug issue.",
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param="master_key",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -7465,7 +7760,7 @@ async def login(request: Request):
     if ui_password is None:
         raise ProxyException(
             message="set Proxy master key to use UI. https://docs.litellm.ai/docs/proxy/virtual_keys. If set, use `--detailed_debug` to debug issue.",
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param="UI_PASSWORD",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -7487,7 +7782,9 @@ async def login(request: Request):
         # Non SSO -> If user is using UI_USERNAME and UI_PASSWORD they are Proxy admin
         user_role = LitellmUserRoles.PROXY_ADMIN
         user_id = username
-        key_user_id = user_id
+
+        # we want the key created to have PROXY_ADMIN_PERMISSIONS
+        key_user_id = litellm_proxy_admin_name
         if (
             os.getenv("PROXY_ADMIN_ID", None) is not None
             and os.environ["PROXY_ADMIN_ID"] == user_id
@@ -7507,12 +7804,22 @@ async def login(request: Request):
         if os.getenv("DATABASE_URL") is not None:
             response = await generate_key_helper_fn(
                 request_type="key",
-                **{"user_role": LitellmUserRoles.PROXY_ADMIN, "duration": "2hr", "key_max_budget": 5, "models": [], "aliases": {}, "config": {}, "spend": 0, "user_id": key_user_id, "team_id": "litellm-dashboard"},  # type: ignore
+                **{
+                    "user_role": LitellmUserRoles.PROXY_ADMIN,
+                    "duration": "24hr",
+                    "key_max_budget": 5,
+                    "models": [],
+                    "aliases": {},
+                    "config": {},
+                    "spend": 0,
+                    "user_id": key_user_id,
+                    "team_id": "litellm-dashboard",
+                },  # type: ignore
             )
         else:
             raise ProxyException(
                 message="No Database connected. Set DATABASE_URL in .env. If set, use `--detailed_debug` to debug issue.",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="DATABASE_URL",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -7524,7 +7831,7 @@ async def login(request: Request):
             litellm_dashboard_ui += "/ui/"
         import jwt
 
-        jwt_token = jwt.encode(
+        jwt_token = jwt.encode(  # type: ignore
             {
                 "user_id": user_id,
                 "key": key,
@@ -7563,7 +7870,7 @@ async def login(request: Request):
                     request_type="key",
                     **{  # type: ignore
                         "user_role": user_role,
-                        "duration": "2hr",
+                        "duration": "24hr",
                         "key_max_budget": 5,
                         "models": [],
                         "aliases": {},
@@ -7576,7 +7883,7 @@ async def login(request: Request):
             else:
                 raise ProxyException(
                     message="No Database connected. Set DATABASE_URL in .env. If set, use `--detailed_debug` to debug issue.",
-                    type="auth_error",
+                    type=ProxyErrorTypes.auth_error,
                     param="DATABASE_URL",
                     code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
@@ -7588,7 +7895,7 @@ async def login(request: Request):
                 litellm_dashboard_ui += "/ui/"
             import jwt
 
-            jwt_token = jwt.encode(
+            jwt_token = jwt.encode(  # type: ignore
                 {
                     "user_id": user_id,
                     "key": key,
@@ -7609,14 +7916,14 @@ async def login(request: Request):
         else:
             raise ProxyException(
                 message=f"Invalid credentials used to access UI. Passed in username: {username}, passed in password: {password}.\nNot valid credentials for {username}",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="invalid_credentials",
                 code=status.HTTP_401_UNAUTHORIZED,
             )
     else:
         raise ProxyException(
             message=f"Invalid credentials used to access UI. Passed in username: {username}, passed in password: {password}.\nCheck 'UI_USERNAME', 'UI_PASSWORD' in .env file",
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param="invalid_credentials",
             code=status.HTTP_401_UNAUTHORIZED,
         )
@@ -7648,7 +7955,7 @@ async def onboarding(invite_link: str):
     if master_key is None:
         raise ProxyException(
             message="Master Key not set for Proxy. Please set Master Key to use Admin UI. Set `LITELLM_MASTER_KEY` in .env or set general_settings:master_key in config.yaml.  https://docs.litellm.ai/docs/proxy/virtual_keys. If set, use `--detailed_debug` to debug issue.",
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param="master_key",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -7704,7 +8011,7 @@ async def onboarding(invite_link: str):
         request_type="key",
         **{
             "user_role": user_obj.user_role,
-            "duration": "2hr",
+            "duration": "24hr",
             "key_max_budget": 5,
             "models": [],
             "aliases": {},
@@ -7723,7 +8030,7 @@ async def onboarding(invite_link: str):
         litellm_dashboard_ui += "/ui/onboarding"
     import jwt
 
-    jwt_token = jwt.encode(
+    jwt_token = jwt.encode(  # type: ignore
         {
             "user_id": user_obj.user_id,
             "key": key,
@@ -7782,22 +8089,12 @@ async def claim_onboarding_link(data: InvitationClaim):
         )
 
     #### CHECK IF CLAIMED
-    ##### if claimed - check if within valid session (within 10 minutes of being claimed)
+    ##### if claimed - accept
     ##### if unclaimed - reject
 
-    current_time = litellm.utils.get_utc_datetime()
-
-    if invite_obj.is_accepted == True:
-        time_difference = current_time - invite_obj.updated_at
-
-        # Check if the difference is within 10 minutes
-        if time_difference > timedelta(minutes=10):
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "error": "The invitation link has already been claimed. Please ask your admin for a new invite link."
-                },
-            )
+    if invite_obj.is_accepted is True:
+        # this is a valid invite that was accepted
+        pass
     else:
         raise HTTPException(
             status_code=401,
@@ -7873,7 +8170,7 @@ async def auth_callback(request: Request):
     if master_key is None:
         raise ProxyException(
             message="Master Key not set for Proxy. Please set Master Key to use Admin UI. Set `LITELLM_MASTER_KEY` in .env or set general_settings:master_key in config.yaml.  https://docs.litellm.ai/docs/proxy/virtual_keys. If set, use `--detailed_debug` to debug issue.",
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param="master_key",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
@@ -7889,7 +8186,7 @@ async def auth_callback(request: Request):
         if google_client_secret is None:
             raise ProxyException(
                 message="GOOGLE_CLIENT_SECRET not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GOOGLE_CLIENT_SECRET",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -7907,14 +8204,14 @@ async def auth_callback(request: Request):
         if microsoft_client_secret is None:
             raise ProxyException(
                 message="MICROSOFT_CLIENT_SECRET not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="MICROSOFT_CLIENT_SECRET",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if microsoft_tenant is None:
             raise ProxyException(
                 message="MICROSOFT_TENANT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="MICROSOFT_TENANT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -7943,28 +8240,28 @@ async def auth_callback(request: Request):
         if generic_client_secret is None:
             raise ProxyException(
                 message="GENERIC_CLIENT_SECRET not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_CLIENT_SECRET",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if generic_authorization_endpoint is None:
             raise ProxyException(
                 message="GENERIC_AUTHORIZATION_ENDPOINT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_AUTHORIZATION_ENDPOINT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if generic_token_endpoint is None:
             raise ProxyException(
                 message="GENERIC_TOKEN_ENDPOINT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_TOKEN_ENDPOINT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         if generic_userinfo_endpoint is None:
             raise ProxyException(
                 message="GENERIC_USERINFO_ENDPOINT not set. Set it in .env file",
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param="GENERIC_USERINFO_ENDPOINT",
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -8052,7 +8349,7 @@ async def auth_callback(request: Request):
     # User might not be already created on first generation of key
     # But if it is, we want their models preferences
     default_ui_key_values = {
-        "duration": "2hr",
+        "duration": "24hr",
         "key_max_budget": 0.01,
         "aliases": {},
         "config": {},
@@ -8150,7 +8447,7 @@ async def auth_callback(request: Request):
 
     import jwt
 
-    jwt_token = jwt.encode(
+    jwt_token = jwt.encode(  # type: ignore
         {
             "user_id": user_id,
             "key": key,
@@ -8480,11 +8777,8 @@ async def update_config(config_info: ConfigYAML):
 
             # encrypt updated_environment_variables #
             for k, v in _updated_environment_variables.items():
-                if isinstance(v, str):
-                    encrypted_value = encrypt_value(value=v, master_key=master_key)  # type: ignore
-                    _updated_environment_variables[k] = base64.b64encode(
-                        encrypted_value
-                    ).decode("utf-8")
+                encrypted_value = encrypt_value_helper(value=v)
+                _updated_environment_variables[k] = encrypted_value
 
             _existing_env_variables = config["environment_variables"]
 
@@ -8538,7 +8832,7 @@ async def update_config(config_info: ConfigYAML):
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
@@ -8546,7 +8840,7 @@ async def update_config(config_info: ConfigYAML):
             raise e
         raise ProxyException(
             message="Authentication Error, " + str(e),
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param=getattr(e, "param", "None"),
             code=status.HTTP_400_BAD_REQUEST,
         )
@@ -8901,11 +9195,8 @@ async def get_config():
                         env_vars_dict[_var] = None
                     else:
                         # decode + decrypt the value
-                        decoded_b64 = base64.b64decode(env_variable)
-                        _decrypted_value = decrypt_value(
-                            value=decoded_b64, master_key=master_key
-                        )
-                        env_vars_dict[_var] = _decrypted_value
+                        decrypted_value = decrypt_value_helper(value=env_variable)
+                        env_vars_dict[_var] = decrypted_value
 
                 _data_to_return.append({"name": _callback, "variables": env_vars_dict})
             elif _callback == "langfuse":
@@ -8921,11 +9212,8 @@ async def get_config():
                         _langfuse_env_vars[_var] = None
                     else:
                         # decode + decrypt the value
-                        decoded_b64 = base64.b64decode(env_variable)
-                        _decrypted_value = decrypt_value(
-                            value=decoded_b64, master_key=master_key
-                        )
-                        _langfuse_env_vars[_var] = _decrypted_value
+                        decrypted_value = decrypt_value_helper(value=env_variable)
+                        _langfuse_env_vars[_var] = decrypted_value
 
                 _data_to_return.append(
                     {"name": _callback, "variables": _langfuse_env_vars}
@@ -8946,10 +9234,7 @@ async def get_config():
                     _slack_env_vars[_var] = _value
                 else:
                     # decode + decrypt the value
-                    decoded_b64 = base64.b64decode(env_variable)
-                    _decrypted_value = decrypt_value(
-                        value=decoded_b64, master_key=master_key
-                    )
+                    _decrypted_value = decrypt_value_helper(value=env_variable)
                     _slack_env_vars[_var] = _decrypted_value
 
             _alerting_types = proxy_logging_obj.slack_alerting_instance.alert_types
@@ -8985,10 +9270,7 @@ async def get_config():
                 _email_env_vars[_var] = None
             else:
                 # decode + decrypt the value
-                decoded_b64 = base64.b64decode(env_variable)
-                _decrypted_value = decrypt_value(
-                    value=decoded_b64, master_key=master_key
-                )
+                _decrypted_value = decrypt_value_helper(value=env_variable)
                 _email_env_vars[_var] = _decrypted_value
 
         alerting_data.append(
@@ -9020,7 +9302,7 @@ async def get_config():
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
-                type="auth_error",
+                type=ProxyErrorTypes.auth_error,
                 param=getattr(e, "param", "None"),
                 code=getattr(e, "status_code", status.HTTP_400_BAD_REQUEST),
             )
@@ -9028,7 +9310,7 @@ async def get_config():
             raise e
         raise ProxyException(
             message="Authentication Error, " + str(e),
-            type="auth_error",
+            type=ProxyErrorTypes.auth_error,
             param=getattr(e, "param", "None"),
             code=status.HTTP_400_BAD_REQUEST,
         )
@@ -9171,6 +9453,7 @@ def cleanup_router_config_variables():
     user_custom_key_generate = None
     use_background_health_checks = None
     health_check_interval = None
+    health_check_details = None
     prisma_client = None
     custom_db_client = None
 
@@ -9184,3 +9467,6 @@ app.include_router(spend_management_router)
 app.include_router(caching_router)
 app.include_router(analytics_router)
 app.include_router(debugging_endpoints_router)
+app.include_router(ui_crud_endpoints_router)
+app.include_router(openai_files_router)
+app.include_router(team_callback_router)

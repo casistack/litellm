@@ -7,6 +7,7 @@ import os
 import re
 import smtplib
 import subprocess
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -24,13 +25,14 @@ from typing_extensions import overload
 import litellm
 import litellm.litellm_core_utils
 import litellm.litellm_core_utils.litellm_logging
-from litellm import EmbeddingResponse, ImageResponse, ModelResponse
+from litellm import EmbeddingResponse, ImageResponse, ModelResponse, get_litellm_params
 from litellm._logging import verbose_proxy_logger
 from litellm._service_logger import ServiceLogging, ServiceTypes
 from litellm.caching import DualCache, RedisCache
 from litellm.exceptions import RejectedRequestError
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.slack_alerting import SlackAlerting
+from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.llms.custom_httpx.httpx_handler import HTTPHandler
 from litellm.proxy._types import (
     AlertType,
@@ -48,6 +50,7 @@ from litellm.proxy.hooks.max_budget_limiter import _PROXY_MaxBudgetLimiter
 from litellm.proxy.hooks.parallel_request_limiter import (
     _PROXY_MaxParallelRequestsHandler,
 )
+from litellm.types.utils import CallTypes, LoggedLiteLLMParams
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
@@ -80,6 +83,8 @@ def safe_deep_copy(data):
 
     Use this function to safely deep copy the LiteLLM Request
     """
+    if litellm.safe_memory_mode is True:
+        return data
 
     # Step 1: Remove the litellm_parent_otel_span
     if isinstance(data, dict):
@@ -183,6 +188,7 @@ class ProxyLogging:
             "new_model_added",
             "outage_alerts",
         ]
+        self.alert_to_webhook_url: Optional[dict] = None
         self.slack_alerting_instance: SlackAlerting = SlackAlerting(
             alerting_threshold=self.alerting_threshold,
             alerting=self.alerting,
@@ -197,6 +203,7 @@ class ProxyLogging:
         redis_cache: Optional[RedisCache] = None,
         alert_types: Optional[List[AlertType]] = None,
         alerting_args: Optional[dict] = None,
+        alert_to_webhook_url: Optional[dict] = None,
     ):
         updated_slack_alerting: bool = False
         if alerting is not None:
@@ -208,6 +215,9 @@ class ProxyLogging:
         if alert_types is not None:
             self.alert_types = alert_types
             updated_slack_alerting = True
+        if alert_to_webhook_url is not None:
+            self.alert_to_webhook_url = alert_to_webhook_url
+            updated_slack_alerting = True
 
         if updated_slack_alerting is True:
             self.slack_alerting_instance.update_values(
@@ -215,6 +225,7 @@ class ProxyLogging:
                 alerting_threshold=self.alerting_threshold,
                 alert_types=self.alert_types,
                 alerting_args=alerting_args,
+                alert_to_webhook_url=self.alert_to_webhook_url,
             )
 
             if (
@@ -272,6 +283,27 @@ class ProxyLogging:
                 callback_list=callback_list
             )
 
+    async def update_request_status(
+        self, litellm_call_id: str, status: Literal["success", "fail"]
+    ):
+        # only use this if slack alerting is being used
+        if self.alerting is None:
+            return
+
+        # current alerting threshold
+        alerting_threshold: float = self.alerting_threshold
+
+        # add a 100 second buffer to the alerting threshold
+        # ensures we don't send errant hanging request slack alerts
+        alerting_threshold += 100
+
+        await self.internal_usage_cache.async_set_cache(
+            key="request_status:{}".format(litellm_call_id),
+            value=status,
+            local_only=True,
+            ttl=alerting_threshold,
+        )
+
     # The actual implementation of the function
     async def pre_call_hook(
         self,
@@ -284,6 +316,7 @@ class ProxyLogging:
             "image_generation",
             "moderation",
             "audio_transcription",
+            "pass_through_endpoint",
         ],
     ) -> dict:
         """
@@ -340,38 +373,9 @@ class ProxyLogging:
                                 raise HTTPException(
                                     status_code=400, detail={"error": response}
                                 )
-            print_verbose(f"final data being sent to {call_type} call: {data}")
+
             return data
         except Exception as e:
-            if "litellm_logging_obj" in data:
-                logging_obj: litellm.litellm_core_utils.litellm_logging.Logging = data[
-                    "litellm_logging_obj"
-                ]
-
-                ## ASYNC FAILURE HANDLER ##
-                error_message = ""
-                if isinstance(e, HTTPException):
-                    if isinstance(e.detail, str):
-                        error_message = e.detail
-                    elif isinstance(e.detail, dict):
-                        error_message = json.dumps(e.detail)
-                    else:
-                        error_message = str(e)
-                else:
-                    error_message = str(e)
-                error_raised = Exception(f"{error_message}")
-                await logging_obj.async_failure_handler(
-                    exception=error_raised,
-                    traceback_exception=traceback.format_exc(),
-                )
-
-                ## SYNC FAILURE HANDLER ##
-                try:
-                    logging_obj.failure_handler(
-                        error_raised, traceback.format_exc()
-                    )  # DO NOT MAKE THREADED - router retry fallback relies on this!
-                except Exception as error_val:
-                    pass
             raise e
 
     async def during_call_hook(
@@ -560,6 +564,9 @@ class ProxyLogging:
         """
 
         ### ALERTING ###
+        await self.update_request_status(
+            litellm_call_id=request_data.get("litellm_call_id", ""), status="fail"
+        )
         if "llm_exceptions" in self.alert_types and not isinstance(
             original_exception, HTTPException
         ):
@@ -582,6 +589,74 @@ class ProxyLogging:
                 )
             )
 
+        ### LOGGING ###
+        if isinstance(original_exception, HTTPException):
+            litellm_logging_obj: Optional[Logging] = request_data.get(
+                "litellm_logging_obj", None
+            )
+            if litellm_logging_obj is None:
+                import uuid
+
+                request_data["litellm_call_id"] = str(uuid.uuid4())
+                litellm_logging_obj, data = litellm.utils.function_setup(
+                    original_function="IGNORE_THIS",
+                    rules_obj=litellm.utils.Rules(),
+                    start_time=datetime.now(),
+                    **request_data,
+                )
+
+            if litellm_logging_obj is not None:
+                ## UPDATE LOGGING INPUT
+                _optional_params = {}
+                _litellm_params = {}
+
+                litellm_param_keys = LoggedLiteLLMParams.__annotations__.keys()
+                for k, v in request_data.items():
+                    if k in litellm_param_keys:
+                        _litellm_params[k] = v
+                    elif k != "model" and k != "user":
+                        _optional_params[k] = v
+
+                litellm_logging_obj.update_environment_variables(
+                    model=request_data.get("model", ""),
+                    user=request_data.get("user", ""),
+                    optional_params=_optional_params,
+                    litellm_params=_litellm_params,
+                )
+
+                input: Union[list, str, dict] = ""
+                if "messages" in request_data and isinstance(
+                    request_data["messages"], list
+                ):
+                    input = request_data["messages"]
+                elif "prompt" in request_data and isinstance(
+                    request_data["prompt"], str
+                ):
+                    input = request_data["prompt"]
+                elif "input" in request_data and isinstance(
+                    request_data["input"], list
+                ):
+                    input = request_data["input"]
+
+                litellm_logging_obj.pre_call(
+                    input=input,
+                    api_key="",
+                )
+
+                # log the custom exception
+                await litellm_logging_obj.async_failure_handler(
+                    exception=original_exception,
+                    traceback_exception=traceback.format_exc(),
+                )
+
+                threading.Thread(
+                    target=litellm_logging_obj.failure_handler,
+                    args=(
+                        original_exception,
+                        traceback.format_exc(),
+                    ),
+                ).start()
+
         for callback in litellm.callbacks:
             try:
                 _callback: Optional[CustomLogger] = None
@@ -598,6 +673,7 @@ class ProxyLogging:
                     )
             except Exception as e:
                 raise e
+
         return
 
     async def post_call_success_hook(
@@ -611,6 +687,7 @@ class ProxyLogging:
         Covers:
         1. /chat/completions
         """
+
         for callback in litellm.callbacks:
             try:
                 _callback: Optional[CustomLogger] = None
@@ -721,9 +798,9 @@ class PrismaClient:
                 subprocess.run(
                     ["prisma", "db", "push", "--accept-data-loss"]
                 )  # this looks like a weird edge case when prisma just wont start on render. we need to have the --accept-data-loss
-            except:
+            except Exception as e:
                 raise Exception(
-                    f"Unable to run prisma commands. Run `pip install prisma`"
+                    f"Unable to run prisma commands. Run `pip install prisma` Got Exception: {(str(e))}"
                 )
             finally:
                 os.chdir(original_dir)
@@ -1248,8 +1325,10 @@ class PrismaClient:
                     t.tpm_limit AS team_tpm_limit,
                     t.rpm_limit AS team_rpm_limit,
                     t.models AS team_models,
+                    t.metadata AS team_metadata,
                     t.blocked AS team_blocked,
                     t.team_alias AS team_alias,
+                    t.metadata AS team_metadata,
                     tm.spend AS team_member_spend,
                     m.aliases as team_model_aliases
                     FROM "LiteLLM_VerificationToken" AS v
@@ -1266,7 +1345,9 @@ class PrismaClient:
                             response["team_models"] = []
                         if response["team_blocked"] is None:
                             response["team_blocked"] = False
-                        response = LiteLLM_VerificationTokenView(**response)
+                        response = LiteLLM_VerificationTokenView(
+                            **response, last_refreshed_at=time.time()
+                        )
                         # for prisma we need to cast the expires time to str
                         if response.expires is not None and isinstance(
                             response.expires, datetime
@@ -1854,6 +1935,34 @@ class PrismaClient:
                 )
             )
             raise e
+
+    async def apply_db_fixes(self):
+        try:
+            verbose_proxy_logger.debug(
+                "Applying LiteLLM - DB Fixes fixing logs in SpendLogs"
+            )
+            sql_query = """
+                UPDATE "LiteLLM_SpendLogs"
+                SET team_id = (
+                    SELECT vt.team_id
+                    FROM "LiteLLM_VerificationToken" vt
+                    WHERE vt.token = "LiteLLM_SpendLogs".api_key
+                )
+                WHERE team_id IS NULL
+                AND EXISTS (
+                    SELECT 1
+                    FROM "LiteLLM_VerificationToken" vt
+                    WHERE vt.token = "LiteLLM_SpendLogs".api_key
+                );
+            """
+            response = await self.db.query_raw(sql_query)
+            verbose_proxy_logger.debug(
+                "Applied LiteLLM - DB Fixes fixing logs in SpendLogs, Response=%s",
+                response,
+            )
+        except Exception as e:
+            verbose_proxy_logger.debug(f"Error apply_db_fixes: {str(e)}")
+        return
 
 
 class DBClient:
@@ -2681,178 +2790,6 @@ def _is_valid_team_configs(team_id=None, team_config=None, request_data=None):
     return
 
 
-def encrypt_value(value: str, master_key: str):
-    import hashlib
-
-    import nacl.secret
-    import nacl.utils
-
-    # get 32 byte master key #
-    hash_object = hashlib.sha256(master_key.encode())
-    hash_bytes = hash_object.digest()
-
-    # initialize secret box #
-    box = nacl.secret.SecretBox(hash_bytes)
-
-    # encode message #
-    value_bytes = value.encode("utf-8")
-
-    encrypted = box.encrypt(value_bytes)
-
-    return encrypted
-
-
-def decrypt_value(value: bytes, master_key: str) -> str:
-    import hashlib
-
-    import nacl.secret
-    import nacl.utils
-
-    # get 32 byte master key #
-    hash_object = hashlib.sha256(master_key.encode())
-    hash_bytes = hash_object.digest()
-
-    # initialize secret box #
-    box = nacl.secret.SecretBox(hash_bytes)
-
-    # Convert the bytes object to a string
-    plaintext = box.decrypt(value)
-
-    plaintext = plaintext.decode("utf-8")  # type: ignore
-    return plaintext  # type: ignore
-
-
-# LiteLLM Admin UI - Non SSO Login
-url_to_redirect_to = os.getenv("PROXY_BASE_URL", "")
-url_to_redirect_to += "/login"
-html_form = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>LiteLLM Login</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            background-color: #f4f4f4;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-        }}
-
-        form {{
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }}
-
-        label {{
-            display: block;
-            margin-bottom: 8px;
-        }}
-
-        input {{
-            width: 100%;
-            padding: 8px;
-            margin-bottom: 16px;
-            box-sizing: border-box;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }}
-
-        input[type="submit"] {{
-            background-color: #4caf50;
-            color: #fff;
-            cursor: pointer;
-        }}
-
-        input[type="submit"]:hover {{
-            background-color: #45a049;
-        }}
-    </style>
-</head>
-<body>
-    <form action="{url_to_redirect_to}" method="post">
-        <h2>LiteLLM Login</h2>
-
-        <p>By default Username is "admin" and Password is your set LiteLLM Proxy `MASTER_KEY`</p>
-        <p>If you need to set UI credentials / SSO docs here: <a href="https://docs.litellm.ai/docs/proxy/ui" target="_blank">https://docs.litellm.ai/docs/proxy/ui</a></p>
-        <br>
-        <label for="username">Username:</label>
-        <input type="text" id="username" name="username" required>
-        <label for="password">Password:</label>
-        <input type="password" id="password" name="password" required>
-        <input type="submit" value="Submit">
-    </form>
-"""
-
-
-missing_keys_html_form = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                background-color: #f4f4f9;
-                color: #333;
-                margin: 20px;
-                line-height: 1.6;
-            }
-            .container {
-                max-width: 600px;
-                margin: auto;
-                padding: 20px;
-                background: #fff;
-                border: 1px solid #ddd;
-                border-radius: 5px;
-                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            }
-            h1 {
-                font-size: 24px;
-                margin-bottom: 20px;
-            }
-            pre {
-                background: #f8f8f8;
-                padding: 10px;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                overflow-x: auto;
-                font-size: 14px;
-            }
-            .env-var {
-                font-weight: normal;
-            }
-            .comment {
-                font-weight: normal;
-                color: #777;
-            }
-        </style>
-        <title>Environment Setup Instructions</title>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Environment Setup Instructions</h1>
-            <p>Please add the following configurations to your environment variables:</p>
-            <pre>
-<span class="env-var">LITELLM_MASTER_KEY="sk-1234"</span> <span class="comment"># make this unique. must start with `sk-`.</span>
-<span class="env-var">DATABASE_URL="postgres://..."</span> <span class="comment"># Need a postgres database? (Check out Supabase, Neon, etc)</span>
-
-<span class="comment">## OPTIONAL ##</span>
-<span class="env-var">PORT=4000</span> <span class="comment"># DO THIS FOR RENDER/RAILWAY</span>
-<span class="env-var">STORE_MODEL_IN_DB="True"</span> <span class="comment"># Allow storing models in db</span>
-            </pre>
-        </div>
-    </body>
-    </html>
-    """
-
-
 def _to_ns(dt):
     return int(dt.timestamp() * 1e9)
 
@@ -2864,6 +2801,11 @@ def get_error_message_str(e: Exception) -> str:
             error_message = e.detail
         elif isinstance(e.detail, dict):
             error_message = json.dumps(e.detail)
+        elif hasattr(e, "message"):
+            if isinstance(e.message, "str"):
+                error_message = e.message
+            elif isinstance(e.message, dict):
+                error_message = json.dumps(e.message)
         else:
             error_message = str(e)
     else:

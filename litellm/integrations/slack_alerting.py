@@ -606,6 +606,13 @@ class SlackAlerting(CustomLogger):
                 and request_data.get("litellm_status", "") != "success"
                 and request_data.get("litellm_status", "") != "fail"
             ):
+                ## CHECK IF CACHE IS UPDATED
+                litellm_call_id = request_data.get("litellm_call_id", "")
+                status: Optional[str] = await self.internal_usage_cache.async_get_cache(
+                    key="request_status:{}".format(litellm_call_id), local_only=True
+                )
+                if status is not None and (status == "success" or status == "fail"):
+                    return
                 if request_data.get("deployment", None) is not None and isinstance(
                     request_data["deployment"], dict
                 ):
@@ -668,7 +675,7 @@ class SlackAlerting(CustomLogger):
     async def failed_tracking_alert(self, error_message: str):
         """Raise alert when tracking failed for specific model"""
         _cache: DualCache = self.internal_usage_cache
-        message = "Failed Tracking Cost for" + error_message
+        message = "Failed Tracking Cost for " + error_message
         _cache_key = "budget_alerts:failed_tracking:{}".format(message)
         result = await _cache.async_get_cache(key=_cache_key)
         if result is None:
@@ -1523,15 +1530,19 @@ Model Info:
         """Log deployment latency"""
         try:
             if "daily_reports" in self.alert_types:
-                model_id = (
-                    kwargs.get("litellm_params", {}).get("model_info", {}).get("id", "")
-                )
+                litellm_params = kwargs.get("litellm_params", {}) or {}
+                model_info = litellm_params.get("model_info", {}) or {}
+                model_id = model_info.get("id", "") or ""
                 response_s: timedelta = end_time - start_time
 
                 final_value = response_s
                 total_tokens = 0
 
-                if isinstance(response_obj, litellm.ModelResponse):
+                if isinstance(response_obj, litellm.ModelResponse) and (
+                    hasattr(response_obj, "usage")
+                    and response_obj.usage is not None
+                    and hasattr(response_obj.usage, "completion_tokens")
+                ):
                     completion_tokens = response_obj.usage.completion_tokens
                     if completion_tokens is not None and completion_tokens > 0:
                         final_value = float(
@@ -1550,8 +1561,7 @@ Model Info:
                 )
         except Exception as e:
             verbose_proxy_logger.error(
-                "[Non-Blocking Error] Slack Alerting: Got error in logging LLM deployment latency: ",
-                e,
+                f"[Non-Blocking Error] Slack Alerting: Got error in logging LLM deployment latency: {str(e)}"
             )
             pass
 

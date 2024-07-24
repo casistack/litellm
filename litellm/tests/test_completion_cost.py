@@ -4,8 +4,11 @@ import traceback
 
 import litellm.cost_calculator
 
-sys.path.insert(0, os.path.abspath("../.."))  # Adds the parent directory to the system path
+sys.path.insert(
+    0, os.path.abspath("../..")
+)  # Adds the parent directory to the system path
 import asyncio
+import os
 import time
 from typing import Optional
 
@@ -39,6 +42,14 @@ class CustomLoggingHandler(CustomLogger):
 
         print(f"response_cost: {self.response_cost} ")
 
+    def log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        print("Reaches log failure event!")
+        self.response_cost = kwargs["response_cost"]
+
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        print("Reaches async log failure event!")
+        self.response_cost = kwargs["response_cost"]
+
 
 @pytest.mark.parametrize("sync_mode", [True, False])
 @pytest.mark.asyncio
@@ -63,6 +74,41 @@ async def test_custom_pricing(sync_mode):
             output_cost_per_token=0.0,
         )
 
+        await asyncio.sleep(5)
+
+    print(f"new_handler.response_cost: {new_handler.response_cost}")
+    assert new_handler.response_cost is not None
+
+    assert new_handler.response_cost == 0
+
+
+@pytest.mark.parametrize(
+    "sync_mode",
+    [True, False],
+)
+@pytest.mark.asyncio
+async def test_failure_completion_cost(sync_mode):
+    new_handler = CustomLoggingHandler()
+    litellm.callbacks = [new_handler]
+    if sync_mode:
+        try:
+            response = litellm.completion(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": "Hey!"}],
+                mock_response=Exception("this should trigger an error"),
+            )
+        except Exception:
+            pass
+        time.sleep(5)
+    else:
+        try:
+            response = await litellm.acompletion(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": "Hey!"}],
+                mock_response=Exception("this should trigger an error"),
+            )
+        except Exception:
+            pass
         await asyncio.sleep(5)
 
     print(f"new_handler.response_cost: {new_handler.response_cost}")
@@ -167,11 +213,15 @@ def test_cost_ft_gpt_35():
         input_cost = model_cost["ft:gpt-3.5-turbo"]["input_cost_per_token"]
         output_cost = model_cost["ft:gpt-3.5-turbo"]["output_cost_per_token"]
         print(input_cost, output_cost)
-        expected_cost = (input_cost * resp.usage.prompt_tokens) + (output_cost * resp.usage.completion_tokens)
+        expected_cost = (input_cost * resp.usage.prompt_tokens) + (
+            output_cost * resp.usage.completion_tokens
+        )
         print("\n Excpected cost", expected_cost)
         assert cost == expected_cost
     except Exception as e:
-        pytest.fail(f"Cost Calc failed for ft:gpt-3.5. Expected {expected_cost}, Calculated cost {cost}")
+        pytest.fail(
+            f"Cost Calc failed for ft:gpt-3.5. Expected {expected_cost}, Calculated cost {cost}"
+        )
 
 
 # test_cost_ft_gpt_35()
@@ -200,15 +250,21 @@ def test_cost_azure_gpt_35():
             usage=Usage(prompt_tokens=21, completion_tokens=17, total_tokens=38),
         )
 
-        cost = litellm.completion_cost(completion_response=resp, model="azure/gpt-35-turbo")
+        cost = litellm.completion_cost(
+            completion_response=resp, model="azure/gpt-35-turbo"
+        )
         print("\n Calculated Cost for azure/gpt-3.5-turbo", cost)
         input_cost = model_cost["azure/gpt-35-turbo"]["input_cost_per_token"]
         output_cost = model_cost["azure/gpt-35-turbo"]["output_cost_per_token"]
-        expected_cost = (input_cost * resp.usage.prompt_tokens) + (output_cost * resp.usage.completion_tokens)
+        expected_cost = (input_cost * resp.usage.prompt_tokens) + (
+            output_cost * resp.usage.completion_tokens
+        )
         print("\n Excpected cost", expected_cost)
         assert cost == expected_cost
     except Exception as e:
-        pytest.fail(f"Cost Calc failed for azure/gpt-3.5-turbo. Expected {expected_cost}, Calculated cost {cost}")
+        pytest.fail(
+            f"Cost Calc failed for azure/gpt-3.5-turbo. Expected {expected_cost}, Calculated cost {cost}"
+        )
 
 
 # test_cost_azure_gpt_35()
@@ -239,7 +295,9 @@ def test_cost_azure_embedding():
         assert cost == expected_cost
 
     except Exception as e:
-        pytest.fail(f"Cost Calc failed for azure/gpt-3.5-turbo. Expected {expected_cost}, Calculated cost {cost}")
+        pytest.fail(
+            f"Cost Calc failed for azure/gpt-3.5-turbo. Expected {expected_cost}, Calculated cost {cost}"
+        )
 
 
 # test_cost_azure_embedding()
@@ -315,7 +373,9 @@ def test_cost_bedrock_pricing_actual_calls():
     litellm.set_verbose = True
     model = "anthropic.claude-instant-v1"
     messages = [{"role": "user", "content": "Hey, how's it going?"}]
-    response = litellm.completion(model=model, messages=messages, mock_response="hello cool one")
+    response = litellm.completion(
+        model=model, messages=messages, mock_response="hello cool one"
+    )
 
     print("response", response)
     cost = litellm.completion_cost(
@@ -345,7 +405,8 @@ def test_whisper_openai():
     print(f"cost: {cost}")
     print(f"whisper dict: {litellm.model_cost['whisper-1']}")
     expected_cost = round(
-        litellm.model_cost["whisper-1"]["output_cost_per_second"] * _total_time_in_seconds,
+        litellm.model_cost["whisper-1"]["output_cost_per_second"]
+        * _total_time_in_seconds,
         5,
     )
     assert cost == expected_cost
@@ -365,12 +426,15 @@ def test_whisper_azure():
     _total_time_in_seconds = 3
 
     transcription._response_ms = _total_time_in_seconds * 1000
-    cost = litellm.completion_cost(model="azure/azure-whisper", completion_response=transcription)
+    cost = litellm.completion_cost(
+        model="azure/azure-whisper", completion_response=transcription
+    )
 
     print(f"cost: {cost}")
     print(f"whisper dict: {litellm.model_cost['whisper-1']}")
     expected_cost = round(
-        litellm.model_cost["whisper-1"]["output_cost_per_second"] * _total_time_in_seconds,
+        litellm.model_cost["whisper-1"]["output_cost_per_second"]
+        * _total_time_in_seconds,
         5,
     )
     assert cost == expected_cost
@@ -401,7 +465,9 @@ def test_dalle_3_azure_cost_tracking():
     response.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     response._hidden_params = {"model": "dall-e-3", "model_id": None}
     print(f"response hidden params: {response._hidden_params}")
-    cost = litellm.completion_cost(completion_response=response, call_type="image_generation")
+    cost = litellm.completion_cost(
+        completion_response=response, call_type="image_generation"
+    )
     assert cost > 0
 
 
@@ -433,7 +499,9 @@ def test_replicate_llama3_cost_tracking():
         model="replicate/meta/meta-llama-3-8b-instruct",
         object="chat.completion",
         system_fingerprint=None,
-        usage=litellm.utils.Usage(prompt_tokens=48, completion_tokens=31, total_tokens=79),
+        usage=litellm.utils.Usage(
+            prompt_tokens=48, completion_tokens=31, total_tokens=79
+        ),
     )
     cost = litellm.completion_cost(
         completion_response=response,
@@ -443,8 +511,14 @@ def test_replicate_llama3_cost_tracking():
     print(f"cost: {cost}")
     cost = round(cost, 5)
     expected_cost = round(
-        litellm.model_cost["replicate/meta/meta-llama-3-8b-instruct"]["input_cost_per_token"] * 48
-        + litellm.model_cost["replicate/meta/meta-llama-3-8b-instruct"]["output_cost_per_token"] * 31,
+        litellm.model_cost["replicate/meta/meta-llama-3-8b-instruct"][
+            "input_cost_per_token"
+        ]
+        * 48
+        + litellm.model_cost["replicate/meta/meta-llama-3-8b-instruct"][
+            "output_cost_per_token"
+        ]
+        * 31,
         5,
     )
     assert cost == expected_cost
@@ -538,7 +612,9 @@ def test_together_ai_qwen_completion_cost():
         "custom_cost_per_second": None,
     }
 
-    response = litellm.cost_calculator.get_model_params_and_category(model_name="qwen/Qwen2-72B-Instruct")
+    response = litellm.cost_calculator.get_model_params_and_category(
+        model_name="qwen/Qwen2-72B-Instruct"
+    )
 
     assert response == "together-ai-41.1b-80b"
 
@@ -576,8 +652,12 @@ def test_gemini_completion_cost(above_128k, provider):
         ), "model info for model={} does not have pricing for > 128k tokens\nmodel_info={}".format(
             model_name, model_info
         )
-        input_cost = prompt_tokens * model_info["input_cost_per_token_above_128k_tokens"]
-        output_cost = output_tokens * model_info["output_cost_per_token_above_128k_tokens"]
+        input_cost = (
+            prompt_tokens * model_info["input_cost_per_token_above_128k_tokens"]
+        )
+        output_cost = (
+            output_tokens * model_info["output_cost_per_token_above_128k_tokens"]
+        )
     else:
         input_cost = prompt_tokens * model_info["input_cost_per_token"]
         output_cost = output_tokens * model_info["output_cost_per_token"]
@@ -624,6 +704,33 @@ def test_vertex_ai_completion_cost():
     assert round(expected_input_cost, 6) == round(calculated_input_cost, 6)
     print("expected_input_cost: {}".format(expected_input_cost))
     print("calculated_input_cost: {}".format(calculated_input_cost))
+
+
+@pytest.mark.skip(reason="new test - WIP, working on fixing this")
+def test_vertex_ai_medlm_completion_cost():
+    """Test for medlm completion cost ."""
+
+    with pytest.raises(Exception) as e:
+        model = "vertex_ai/medlm-medium"
+        messages = [{"role": "user", "content": "Test MedLM completion cost."}]
+        predictive_cost = completion_cost(
+            model=model, messages=messages, custom_llm_provider="vertex_ai"
+        )
+
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    model = "vertex_ai/medlm-medium"
+    messages = [{"role": "user", "content": "Test MedLM completion cost."}]
+    predictive_cost = completion_cost(
+        model=model, messages=messages, custom_llm_provider="vertex_ai"
+    )
+    assert predictive_cost > 0
+
+    model = "vertex_ai/medlm-large"
+    messages = [{"role": "user", "content": "Test MedLM completion cost."}]
+    predictive_cost = completion_cost(model=model, messages=messages)
+    assert predictive_cost > 0
 
 
 def test_vertex_ai_claude_completion_cost():
@@ -674,3 +781,141 @@ def test_vertex_ai_claude_completion_cost():
     )
     predicted_cost = input_tokens * 0.000003 + 0.000015 * output_tokens
     assert cost == predicted_cost
+
+
+def test_vertex_ai_embedding_completion_cost(caplog):
+    """
+    Relevant issue - https://github.com/BerriAI/litellm/issues/4630
+    """
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    text = "The quick brown fox jumps over the lazy dog."
+    input_tokens = litellm.token_counter(
+        model="vertex_ai/textembedding-gecko", text=text
+    )
+
+    model_info = litellm.get_model_info(model="vertex_ai/textembedding-gecko")
+
+    print("\nExpected model info:\n{}\n\n".format(model_info))
+
+    expected_input_cost = input_tokens * model_info["input_cost_per_token"]
+
+    ## CALCULATED COST
+    calculated_input_cost, calculated_output_cost = cost_per_token(
+        model="textembedding-gecko",
+        custom_llm_provider="vertex_ai",
+        prompt_tokens=input_tokens,
+        call_type="aembedding",
+    )
+
+    assert round(expected_input_cost, 6) == round(calculated_input_cost, 6)
+    print("expected_input_cost: {}".format(expected_input_cost))
+    print("calculated_input_cost: {}".format(calculated_input_cost))
+
+    captured_logs = [rec.message for rec in caplog.records]
+    for item in captured_logs:
+        print("\nitem:{}\n".format(item))
+        if (
+            "litellm.litellm_core_utils.llm_cost_calc.google.cost_per_character(): Exception occured "
+            in item
+        ):
+            raise Exception("Error log raised for calculating embedding cost")
+
+
+# def test_vertex_ai_embedding_completion_cost_e2e():
+#     """
+#     Relevant issue - https://github.com/BerriAI/litellm/issues/4630
+#     """
+#     from litellm.tests.test_amazing_vertex_completion import load_vertex_ai_credentials
+
+#     load_vertex_ai_credentials()
+#     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+#     litellm.model_cost = litellm.get_model_cost_map(url="")
+
+#     text = "The quick brown fox jumps over the lazy dog."
+#     input_tokens = litellm.token_counter(
+#         model="vertex_ai/textembedding-gecko", text=text
+#     )
+
+#     model_info = litellm.get_model_info(model="vertex_ai/textembedding-gecko")
+
+#     print("\nExpected model info:\n{}\n\n".format(model_info))
+
+#     expected_input_cost = input_tokens * model_info["input_cost_per_token"]
+
+#     ## CALCULATED COST
+#     resp = litellm.embedding(model="textembedding-gecko", input=[text])
+
+#     calculated_input_cost = resp._hidden_params["response_cost"]
+
+#     assert round(expected_input_cost, 6) == round(calculated_input_cost, 6)
+#     print("expected_input_cost: {}".format(expected_input_cost))
+#     print("calculated_input_cost: {}".format(calculated_input_cost))
+
+#     assert False
+
+
+def test_completion_azure_ai():
+    try:
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+
+        litellm.set_verbose = True
+        response = litellm.completion(
+            model="azure_ai/Mistral-large-nmefg",
+            messages=[{"content": "what llm are you", "role": "user"}],
+            max_tokens=15,
+            num_retries=3,
+            api_base=os.getenv("AZURE_AI_MISTRAL_API_BASE"),
+            api_key=os.getenv("AZURE_AI_MISTRAL_API_KEY"),
+        )
+        print(response)
+
+        assert "response_cost" in response._hidden_params
+        assert isinstance(response._hidden_params["response_cost"], float)
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.parametrize("sync_mode", [True, False])
+@pytest.mark.asyncio
+async def test_completion_cost_hidden_params(sync_mode):
+    litellm.return_response_headers = True
+    if sync_mode:
+        response = litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Hey, how's it going?"}],
+            mock_response="Hello world",
+        )
+    else:
+        response = await litellm.acompletion(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Hey, how's it going?"}],
+            mock_response="Hello world",
+        )
+
+    assert "response_cost" in response._hidden_params
+    assert isinstance(response._hidden_params["response_cost"], float)
+
+
+def test_vertex_ai_gemini_predict_cost():
+    model = "gemini-1.5-flash"
+    messages = [{"role": "user", "content": "Hey, hows it going???"}]
+    predictive_cost = completion_cost(model=model, messages=messages)
+
+    assert predictive_cost > 0
+
+
+@pytest.mark.parametrize("model", ["openai/tts-1", "azure/tts-1"])
+def test_completion_cost_tts(model):
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    cost = completion_cost(
+        model=model,
+        prompt="the quick brown fox jumped over the lazy dogs",
+        call_type="speech",
+    )
+
+    assert cost > 0

@@ -18,7 +18,7 @@ import litellm
 import os
 
 response = litellm.completion(
-    model="openai/mistral,               # add `openai/` prefix to model so litellm knows to route to OpenAI
+    model="openai/mistral",               # add `openai/` prefix to model so litellm knows to route to OpenAI
     api_key="sk-1234",                  # api key to your openai compatible endpoint
     api_base="http://0.0.0.0:4000",     # set API Base of your Custom OpenAI Endpoint
     messages=[
@@ -62,6 +62,14 @@ Here's how to call an OpenAI-Compatible Endpoint with the LiteLLM Proxy Server
         api_base: <model-api-base>       # add api base for OpenAI compatible provider
         api_key: api-key                 # api key to send your model
   ```
+
+  :::info
+
+  If you see `Not Found Error` when testing make sure your `api_base` has the `/v1` postfix
+
+  Example: `http://vllm-endpoint.xyz/v1`
+
+  :::
 
 2. Start the proxy 
 

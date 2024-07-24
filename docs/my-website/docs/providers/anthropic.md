@@ -22,6 +22,7 @@ Anthropic API fails requests when `max_tokens` are not passed. Due to this litel
 import os
 
 os.environ["ANTHROPIC_API_KEY"] = "your-api-key"
+# os.environ["ANTHROPIC_API_BASE"] = "" # [OPTIONAL] or 'ANTHROPIC_BASE_URL'
 ```
 
 ## Usage
@@ -55,7 +56,7 @@ for chunk in response:
     print(chunk["choices"][0]["delta"]["content"])  # same as openai format
 ```
 
-## OpenAI Proxy Usage 
+## Usage with LiteLLM Proxy 
 
 Here's how to call Anthropic with the LiteLLM Proxy Server
 
@@ -68,14 +69,6 @@ export ANTHROPIC_API_KEY="your-api-key"
 ### 2. Start the proxy 
 
 <Tabs>
-<TabItem value="cli" label="cli">
-
-```bash
-$ litellm --model claude-3-opus-20240229
-
-# Server running on http://0.0.0.0:4000
-```
-</TabItem>
 <TabItem value="config" label="config.yaml">
 
 ```yaml
@@ -88,6 +81,14 @@ model_list:
 
 ```bash
 litellm --config /path/to/config.yaml
+```
+</TabItem>
+<TabItem value="cli" label="cli">
+
+```bash
+$ litellm --model claude-3-opus-20240229
+
+# Server running on http://0.0.0.0:4000
 ```
 </TabItem>
 </Tabs>
@@ -168,17 +169,34 @@ print(response)
 
 ## Supported Models
 
+`Model Name` 👉 Human-friendly name.  
+`Function Call` 👉 How to call the model in LiteLLM.
+
 | Model Name       | Function Call                              |
 |------------------|--------------------------------------------|
+| claude-3-5-sonnet  | `completion('claude-3-5-sonnet-20240620', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-3-haiku  | `completion('claude-3-haiku-20240307', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-3-opus  | `completion('claude-3-opus-20240229', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
-| claude-3-5-sonnet  | `completion('claude-3-5-sonnet-20240620', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
+| claude-3-5-sonnet-20240620  | `completion('claude-3-5-sonnet-20240620', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-3-sonnet  | `completion('claude-3-sonnet-20240229', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-2.1  | `completion('claude-2.1', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-2  | `completion('claude-2', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-instant-1.2  | `completion('claude-instant-1.2', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 | claude-instant-1  | `completion('claude-instant-1', messages)` | `os.environ['ANTHROPIC_API_KEY']`       |
 
+## Passing Extra Headers to Anthropic API 
+
+Pass `extra_headers: dict` to `litellm.completion`
+
+```python
+from litellm import completion
+messages = [{"role": "user", "content": "What is Anthropic?"}]
+response = completion(
+    model="claude-3-5-sonnet-20240620", 
+    messages=messages, 
+    extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"}
+)
+```
 ## Advanced
 
 ## Usage - Function Calling 
