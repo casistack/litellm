@@ -474,21 +474,13 @@ class AzureChatCompletion(BaseLLM):
         - call chat.completions.create by default
         """
         try:
-            if litellm.return_response_headers is True:
-                raw_response = (
-                    await azure_client.chat.completions.with_raw_response.create(
-                        **data, timeout=timeout
-                    )
-                )
+            raw_response = await azure_client.chat.completions.with_raw_response.create(
+                **data, timeout=timeout
+            )
 
-                headers = dict(raw_response.headers)
-                response = raw_response.parse()
-                return headers, response
-            else:
-                response = await azure_client.chat.completions.create(
-                    **data, timeout=timeout
-                )
-                return None, response
+            headers = dict(raw_response.headers)
+            response = raw_response.parse()
+            return headers, response
         except Exception as e:
             raise e
 
@@ -1863,6 +1855,23 @@ class AzureChatCompletion(BaseLLM):
             completion = await client.images.with_raw_response.generate(
                 model=model,  # type: ignore
                 prompt=prompt,  # type: ignore
+            )
+        elif mode == "audio_transcription":
+            # Get the current directory of the file being run
+            pwd = os.path.dirname(os.path.realpath(__file__))
+            file_path = os.path.join(pwd, "../tests/gettysburg.wav")
+            audio_file = open(file_path, "rb")
+            completion = await client.audio.transcriptions.with_raw_response.create(
+                file=audio_file,
+                model=model,  # type: ignore
+                prompt=prompt,  # type: ignore
+            )
+        elif mode == "audio_speech":
+            # Get the current directory of the file being run
+            completion = await client.audio.speech.with_raw_response.create(
+                model=model,  # type: ignore
+                input=prompt,  # type: ignore
+                voice="alloy",
             )
         else:
             raise Exception("mode not set")

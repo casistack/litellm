@@ -196,6 +196,7 @@ def test_openai_azure_embedding():
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
+
 @pytest.mark.skipif(
     os.environ.get("CIRCLE_OIDC_TOKEN") is None,
     reason="Cannot run without being in CircleCI Runner",
@@ -205,18 +206,23 @@ def test_openai_azure_embedding_with_oidc_and_cf():
     os.environ["AZURE_TENANT_ID"] = "17c0a27a-1246-4aa1-a3b6-d294e80e783c"
     os.environ["AZURE_CLIENT_ID"] = "4faf5422-b2bd-45e8-a6d7-46543a38acd0"
 
+    old_key = os.environ["AZURE_API_KEY"]
+    os.environ.pop("AZURE_API_KEY", None)
+
     try:
         response = embedding(
             model="azure/text-embedding-ada-002",
             input=["Hello"],
             azure_ad_token="oidc/circleci/",
-            api_base="https://gateway.ai.cloudflare.com/v1/0399b10e77ac6668c80404a5ff49eb37/litellm-test/azure-openai/eastus2-litellm",
+            api_base="https://eastus2-litellm.openai.azure.com/",
             api_version="2024-06-01",
         )
         print(response)
 
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
+    finally:
+        os.environ["AZURE_API_KEY"] = old_key
 
 
 def test_openai_azure_embedding_optional_arg(mocker):
@@ -251,14 +257,20 @@ def test_openai_azure_embedding_optional_arg(mocker):
 # test_openai_embedding()
 
 
-def test_cohere_embedding():
+@pytest.mark.parametrize("sync_mode", [True, False])
+@pytest.mark.asyncio
+async def test_cohere_embedding(sync_mode):
     try:
         # litellm.set_verbose=True
-        response = embedding(
-            model="embed-english-v2.0",
-            input=["good morning from litellm", "this is another item"],
-            input_type="search_query",
-        )
+        data = {
+            "model": "embed-english-v2.0",
+            "input": ["good morning from litellm", "this is another item"],
+            "input_type": "search_query",
+        }
+        if sync_mode:
+            response = embedding(**data)
+        else:
+            response = await litellm.aembedding(**data)
         print(f"response:", response)
 
         assert isinstance(response.usage, litellm.Usage)
@@ -402,6 +414,62 @@ def test_hf_embedding():
 
 
 # test_hf_embedding()
+
+from unittest.mock import MagicMock, patch
+
+
+def tgi_mock_post(*args, **kwargs):
+    import json
+
+    expected_data = {
+        "inputs": {
+            "source_sentence": "good morning from litellm",
+            "sentences": ["this is another item"],
+        }
+    }
+    assert (
+        json.loads(kwargs["data"]) == expected_data
+    ), "Data does not match the expected data"
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {"Content-Type": "application/json"}
+    mock_response.json.return_value = [0.7708950042724609]
+    return mock_response
+
+
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+
+
+@pytest.mark.parametrize("sync_mode", [True, False])
+@pytest.mark.asyncio
+async def test_hf_embedding_sentence_sim(sync_mode):
+    try:
+        # huggingface/microsoft/codebert-base
+        # huggingface/facebook/bart-large
+        if sync_mode is True:
+            client = HTTPHandler(concurrent_limit=1)
+        else:
+            client = AsyncHTTPHandler(concurrent_limit=1)
+        with patch.object(client, "post", side_effect=tgi_mock_post) as mock_client:
+            data = {
+                "model": "huggingface/TaylorAI/bge-micro-v2",
+                "input": ["good morning from litellm", "this is another item"],
+                "client": client,
+            }
+            if sync_mode is True:
+                response = embedding(**data)
+            else:
+                response = await litellm.aembedding(**data)
+
+            print(f"response:", response)
+
+            mock_client.assert_called_once()
+
+        assert isinstance(response.usage, litellm.Usage)
+
+    except Exception as e:
+        # Note: Huggingface inference API is unstable and fails with "model loading errors all the time"
+        raise e
 
 
 # test async embeddings

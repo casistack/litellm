@@ -188,7 +188,12 @@ async def test_team_disable_guardrails(mock_acompletion, client_no_auth):
     from fastapi import HTTPException, Request
     from starlette.datastructures import URL
 
-    from litellm.proxy._types import LiteLLM_TeamTable, ProxyException, UserAPIKeyAuth
+    from litellm.proxy._types import (
+        LiteLLM_TeamTable,
+        LiteLLM_TeamTableCachedObj,
+        ProxyException,
+        UserAPIKeyAuth,
+    )
     from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
     from litellm.proxy.proxy_server import hash_token, user_api_key_cache
 
@@ -202,7 +207,7 @@ async def test_team_disable_guardrails(mock_acompletion, client_no_auth):
         last_refreshed_at=time.time(),
     )
     await asyncio.sleep(1)
-    team_obj = LiteLLM_TeamTable(
+    team_obj = LiteLLM_TeamTableCachedObj(
         team_id=_team_id,
         blocked=False,
         last_refreshed_at=time.time(),
@@ -227,7 +232,7 @@ async def test_team_disable_guardrails(mock_acompletion, client_no_auth):
         await user_api_key_auth(request=request, api_key="Bearer " + user_key)
         pytest.fail("Expected to raise 403 forbidden error.")
     except ProxyException as e:
-        assert e.code == 403
+        assert e.code == str(403)
 
 
 from litellm.tests.test_custom_callback_input import CompletionCustomHandler
@@ -625,6 +630,7 @@ def test_chat_completion_optional_params(mock_acompletion, client_no_auth):
 # Run the test
 # test_chat_completion_optional_params()
 
+
 # Test Reading config.yaml file
 from litellm.proxy.proxy_server import ProxyConfig
 
@@ -731,3 +737,66 @@ def test_load_router_config(mock_cache, fake_env_vars):
 
 
 # test_load_router_config()
+
+
+@pytest.mark.asyncio
+async def test_team_update_redis():
+    """
+    Tests if team update, updates the redis cache if set
+    """
+    from litellm.caching import DualCache, RedisCache
+    from litellm.proxy._types import LiteLLM_TeamTableCachedObj
+    from litellm.proxy.auth.auth_checks import _cache_team_object
+
+    proxy_logging_obj: ProxyLogging = getattr(
+        litellm.proxy.proxy_server, "proxy_logging_obj"
+    )
+
+    proxy_logging_obj.internal_usage_cache.redis_cache = RedisCache()
+
+    with patch.object(
+        proxy_logging_obj.internal_usage_cache.redis_cache,
+        "async_set_cache",
+        new=MagicMock(),
+    ) as mock_client:
+        await _cache_team_object(
+            team_id="1234",
+            team_table=LiteLLM_TeamTableCachedObj(),
+            user_api_key_cache=DualCache(),
+            proxy_logging_obj=proxy_logging_obj,
+        )
+
+        mock_client.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_team_redis(client_no_auth):
+    """
+    Tests if get_team_object gets value from redis cache, if set
+    """
+    from litellm.caching import DualCache, RedisCache
+    from litellm.proxy.auth.auth_checks import _cache_team_object, get_team_object
+
+    proxy_logging_obj: ProxyLogging = getattr(
+        litellm.proxy.proxy_server, "proxy_logging_obj"
+    )
+
+    proxy_logging_obj.internal_usage_cache.redis_cache = RedisCache()
+
+    with patch.object(
+        proxy_logging_obj.internal_usage_cache.redis_cache,
+        "async_get_cache",
+        new=AsyncMock(),
+    ) as mock_client:
+        try:
+            await get_team_object(
+                team_id="1234",
+                user_api_key_cache=DualCache(),
+                parent_otel_span=None,
+                proxy_logging_obj=proxy_logging_obj,
+                prisma_client=MagicMock(),
+            )
+        except Exception as e:
+            pass
+
+        mock_client.assert_called_once()
