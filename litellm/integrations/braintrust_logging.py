@@ -7,6 +7,7 @@ import os
 import threading
 import traceback
 import uuid
+from datetime import datetime
 from typing import Literal, Optional
 
 import dotenv
@@ -180,9 +181,9 @@ class BraintrustLogger(CustomLogger):
 
                     # generate langfuse tags - Default Tags sent to Langfuse from LiteLLM Proxy
                     if (
-                        litellm._langfuse_default_tags is not None
-                        and isinstance(litellm._langfuse_default_tags, list)
-                        and key in litellm._langfuse_default_tags
+                        litellm.langfuse_default_tags is not None
+                        and isinstance(litellm.langfuse_default_tags, list)
+                        and key in litellm.langfuse_default_tags
                     ):
                         tags.append(f"{key}:{value}")
 
@@ -234,10 +235,8 @@ class BraintrustLogger(CustomLogger):
             except httpx.HTTPStatusError as e:
                 raise Exception(e.response.text)
         except Exception as e:
-            verbose_logger.error(
-                "Error logging to braintrust - Exception received - {}\n{}".format(
-                    str(e), traceback.format_exc()
-                )
+            verbose_logger.exception(
+                "Error logging to braintrust - Exception received - {}".format(str(e))
             )
             raise e
 
@@ -285,7 +284,6 @@ class BraintrustLogger(CustomLogger):
             for key, value in metadata.items():
                 if (
                     isinstance(value, list)
-                    or isinstance(value, dict)
                     or isinstance(value, str)
                     or isinstance(value, int)
                     or isinstance(value, float)
@@ -293,6 +291,11 @@ class BraintrustLogger(CustomLogger):
                     new_metadata[key] = value
                 elif isinstance(value, BaseModel):
                     new_metadata[key] = value.model_dump_json()
+                elif isinstance(value, dict):
+                    for k, v in value.items():
+                        if isinstance(v, datetime):
+                            value[k] = v.isoformat()
+                    new_metadata[key] = value
 
             metadata = new_metadata
 
@@ -302,9 +305,9 @@ class BraintrustLogger(CustomLogger):
 
                     # generate langfuse tags - Default Tags sent to Langfuse from LiteLLM Proxy
                     if (
-                        litellm._langfuse_default_tags is not None
-                        and isinstance(litellm._langfuse_default_tags, list)
-                        and key in litellm._langfuse_default_tags
+                        litellm.langfuse_default_tags is not None
+                        and isinstance(litellm.langfuse_default_tags, list)
+                        and key in litellm.langfuse_default_tags
                     ):
                         tags.append(f"{key}:{value}")
 
@@ -357,10 +360,8 @@ class BraintrustLogger(CustomLogger):
             except httpx.HTTPStatusError as e:
                 raise Exception(e.response.text)
         except Exception as e:
-            verbose_logger.error(
-                "Error logging to braintrust - Exception received - {}\n{}".format(
-                    str(e), traceback.format_exc()
-                )
+            verbose_logger.exception(
+                "Error logging to braintrust - Exception received - {}".format(str(e))
             )
             raise e
 

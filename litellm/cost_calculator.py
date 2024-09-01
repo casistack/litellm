@@ -19,8 +19,12 @@ from litellm.litellm_core_utils.llm_cost_calc.google import (
     cost_router as google_cost_router,
 )
 from litellm.litellm_core_utils.llm_cost_calc.utils import _generic_cost_per_character
+from litellm.llms.anthropic.cost_calculation import (
+    cost_per_token as anthropic_cost_per_token,
+)
 from litellm.types.llms.openai import HttpxBinaryResponseContent
 from litellm.types.router import SPECIAL_MODEL_INFO_PARAMS
+from litellm.types.utils import Usage
 from litellm.utils import (
     CallTypes,
     CostPerToken,
@@ -59,14 +63,17 @@ def _cost_per_token_custom_pricing_helper(
 
 def cost_per_token(
     model: str = "",
-    prompt_tokens: float = 0,
-    completion_tokens: float = 0,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
     response_time_ms=None,
     custom_llm_provider: Optional[str] = None,
     region_name=None,
     ### CHARACTER PRICING ###
-    prompt_characters: float = 0,
-    completion_characters: float = 0,
+    prompt_characters: int = 0,
+    completion_characters: int = 0,
+    ### PROMPT CACHING PRICING ### - used for anthropic
+    cache_creation_input_tokens: Optional[int] = 0,
+    cache_read_input_tokens: Optional[int] = 0,
     ### CUSTOM PRICING ###
     custom_cost_per_token: Optional[CostPerToken] = None,
     custom_cost_per_second: Optional[float] = None,
@@ -108,6 +115,16 @@ def cost_per_token(
     """
     if model is None:
         raise Exception("Invalid arg. Model cannot be none.")
+
+    ## RECONSTRUCT USAGE BLOCK ##
+    usage_block = Usage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+    )
+
     ## CUSTOM PRICING ##
     response_cost = _cost_per_token_custom_pricing_helper(
         prompt_tokens=prompt_tokens,
@@ -137,6 +154,7 @@ def cost_per_token(
                 model_with_provider = model_with_provider_and_region
     else:
         _, custom_llm_provider, _, _ = litellm.get_llm_provider(model=model)
+
     model_without_prefix = model
     model_parts = model.split("/")
     if len(model_parts) > 1:
@@ -162,6 +180,7 @@ def cost_per_token(
 
     # see this https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models
     print_verbose(f"Looking up model={model} in model_cost_map")
+
     if custom_llm_provider == "vertex_ai":
         cost_router = google_cost_router(
             model=model_without_prefix,
@@ -188,6 +207,8 @@ def cost_per_token(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
             )
+    elif custom_llm_provider == "anthropic":
+        return anthropic_cost_per_token(model=model, usage=usage_block)
     elif custom_llm_provider == "gemini":
         return google_cost_per_token(
             model=model_without_prefix,
@@ -410,6 +431,40 @@ def get_replicate_completion_pricing(completion_response=None, total_time=0.0):
     return a100_80gb_price_per_second_public * total_time / 1000
 
 
+def _select_model_name_for_cost_calc(
+    model: Optional[str],
+    completion_response: Union[BaseModel, dict, str],
+    base_model: Optional[str] = None,
+    custom_pricing: Optional[bool] = None,
+) -> Optional[str]:
+    """
+    1. If custom pricing is true, return received model name
+    2. If base_model is set (e.g. for azure models), return that
+    3. If completion response has model set return that
+    4. If model is passed in return that
+    """
+    if custom_pricing is True:
+        return model
+
+    if base_model is not None:
+        return base_model
+
+    return_model = model
+    if isinstance(completion_response, str):
+        return return_model
+
+    elif return_model is None:
+        return_model = completion_response.get("model", "")  # type: ignore
+    if hasattr(completion_response, "_hidden_params"):
+        if (
+            completion_response._hidden_params.get("model", None) is not None
+            and len(completion_response._hidden_params["model"]) > 0
+        ):
+            return_model = completion_response._hidden_params.get("model", model)
+
+    return return_model
+
+
 def completion_cost(
     completion_response=None,
     model: Optional[str] = None,
@@ -486,30 +541,46 @@ def completion_cost(
         prompt_characters = 0
         completion_tokens = 0
         completion_characters = 0
+        cache_creation_input_tokens: Optional[int] = None
+        cache_read_input_tokens: Optional[int] = None
         if completion_response is not None and (
             isinstance(completion_response, BaseModel)
             or isinstance(completion_response, dict)
         ):  # tts returns a custom class
+
+            usage_obj: Optional[Union[dict, litellm.Usage]] = completion_response.get(
+                "usage", {}
+            )
+            if isinstance(usage_obj, BaseModel) and not isinstance(
+                usage_obj, litellm.Usage
+            ):
+                setattr(
+                    completion_response,
+                    "usage",
+                    litellm.Usage(**usage_obj.model_dump()),
+                )
             # get input/output tokens from completion_response
             prompt_tokens = completion_response.get("usage", {}).get("prompt_tokens", 0)
             completion_tokens = completion_response.get("usage", {}).get(
                 "completion_tokens", 0
             )
+            cache_creation_input_tokens = completion_response.get("usage", {}).get(
+                "cache_creation_input_tokens", 0
+            )
+            cache_read_input_tokens = completion_response.get("usage", {}).get(
+                "cache_read_input_tokens", 0
+            )
+
             total_time = getattr(completion_response, "_response_ms", 0)
             verbose_logger.debug(
                 f"completion_response response ms: {getattr(completion_response, '_response_ms', None)} "
             )
-            model = model or completion_response.get(
-                "model", None
-            )  # check if user passed an override for model, if it's none check completion_response['model']
+            model = _select_model_name_for_cost_calc(
+                model=model, completion_response=completion_response
+            )
             if hasattr(completion_response, "_hidden_params"):
-                if (
-                    completion_response._hidden_params.get("model", None) is not None
-                    and len(completion_response._hidden_params["model"]) > 0
-                ):
-                    model = completion_response._hidden_params.get("model", model)
                 custom_llm_provider = completion_response._hidden_params.get(
-                    "custom_llm_provider", custom_llm_provider or ""
+                    "custom_llm_provider", custom_llm_provider or None
                 )
                 region_name = completion_response._hidden_params.get(
                     "region_name", region_name
@@ -624,7 +695,7 @@ def completion_cost(
 
         if custom_llm_provider is not None and custom_llm_provider == "vertex_ai":
             # Calculate the prompt characters + response characters
-            if len("messages") > 0:
+            if len(messages) > 0:
                 prompt_string = litellm.utils.get_formatted_prompt(
                     data={"messages": messages}, call_type="completion"
                 )
@@ -656,6 +727,8 @@ def completion_cost(
             custom_cost_per_token=custom_cost_per_token,
             prompt_characters=prompt_characters,
             completion_characters=completion_characters,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
             call_type=call_type,
         )
         _final_cost = prompt_tokens_cost_usd_dollar + completion_tokens_cost_usd_dollar
@@ -716,9 +789,7 @@ def response_cost_calculator(
                     custom_llm_provider=custom_llm_provider,
                 )
             else:
-                if (
-                    model in litellm.model_cost or custom_pricing is True
-                ):  # override defaults if custom pricing is set
+                if custom_pricing is True:  # override defaults if custom pricing is set
                     base_model = model
                 # base_model defaults to None if not set on model_info
 

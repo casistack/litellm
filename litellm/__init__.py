@@ -43,6 +43,7 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "logfire",
     "dynamic_rate_limiter",
     "langsmith",
+    "prometheus",
     "galileo",
     "braintrust",
     "arize",
@@ -52,18 +53,7 @@ _known_custom_logger_compatible_callbacks: List = list(
     get_args(_custom_logger_compatible_callbacks_literal)
 )
 callbacks: List[Union[Callable, _custom_logger_compatible_callbacks_literal]] = []
-_langfuse_default_tags: Optional[
-    List[
-        Literal[
-            "user_api_key_alias",
-            "user_api_key_user_id",
-            "user_api_key_user_email",
-            "user_api_key_team_alias",
-            "semantic-similarity",
-            "proxy_base_url",
-        ]
-    ]
-] = None
+langfuse_default_tags: Optional[List[str]] = None
 _async_input_callback: List[Callable] = (
     []
 )  # internal variable - async custom callbacks are routed here.
@@ -121,13 +111,13 @@ common_cloud_provider_auth_params: dict = {
     "providers": ["vertex_ai", "bedrock", "watsonx", "azure", "vertex_ai_beta"],
 }
 use_client: bool = False
-ssl_verify: bool = True
+ssl_verify: Union[str, bool] = True
 ssl_certificate: Optional[str] = None
 disable_streaming_logging: bool = False
 in_memory_llm_clients_cache: dict = {}
 safe_memory_mode: bool = False
 ### DEFAULT AZURE API VERSION ###
-AZURE_DEFAULT_API_VERSION = "2024-02-01"  # this is updated to the latest
+AZURE_DEFAULT_API_VERSION = "2024-07-01-preview"  # this is updated to the latest
 ### GUARDRAILS ###
 llamaguard_model_name: Optional[str] = None
 openai_moderations_model_name: Optional[str] = None
@@ -144,6 +134,7 @@ enable_preview_features: bool = False
 return_response_headers: bool = (
     False  # get response headers from LLM Api providers - example x-remaining-requests,
 )
+enable_json_schema_validation: bool = False
 ##################
 logging: bool = True
 enable_caching_on_provider_specific_optional_params: bool = (
@@ -259,10 +250,13 @@ upperbound_key_generate_params: Optional[LiteLLM_UpperboundKeyGenerateParams] = 
 default_user_params: Optional[Dict] = None
 default_team_settings: Optional[List] = None
 max_user_budget: Optional[float] = None
+max_internal_user_budget: Optional[float] = None
+internal_user_budget_duration: Optional[str] = None
 max_end_user_budget: Optional[float] = None
 #### REQUEST PRIORITIZATION ####
 priority_reservation: Optional[Dict[str, float]] = None
 #### RELIABILITY ####
+REPEATED_STREAMING_CHUNK_LIMIT = 100  # catch if model starts looping the same chunk while streaming. Uses high default to prevent false positives.
 request_timeout: float = 6000
 module_level_aclient = AsyncHTTPHandler(timeout=request_timeout)
 module_level_client = HTTPHandler(timeout=request_timeout)
@@ -345,6 +339,7 @@ api_version = None
 organization = None
 project = None
 config_path = None
+vertex_ai_safety_settings: Optional[dict] = None
 ####### COMPLETION MODELS ###################
 open_ai_chat_completion_models: List = []
 open_ai_text_completion_models: List = []
@@ -363,11 +358,13 @@ vertex_code_text_models: List = []
 vertex_embedding_models: List = []
 vertex_anthropic_models: List = []
 vertex_llama3_models: List = []
+vertex_ai_ai21_models: List = []
 vertex_mistral_models: List = []
 ai21_models: List = []
 nlp_cloud_models: List = []
 aleph_alpha_models: List = []
 bedrock_models: List = []
+fireworks_ai_models: List = []
 deepinfra_models: List = []
 perplexity_models: List = []
 watsonx_models: List = []
@@ -412,6 +409,9 @@ for key, value in model_cost.items():
     elif value.get("litellm_provider") == "vertex_ai-mistral_models":
         key = key.replace("vertex_ai/", "")
         vertex_mistral_models.append(key)
+    elif value.get("litellm_provider") == "vertex_ai-ai21_models":
+        key = key.replace("vertex_ai/", "")
+        vertex_ai_ai21_models.append(key)
     elif value.get("litellm_provider") == "ai21":
         ai21_models.append(key)
     elif value.get("litellm_provider") == "nlp_cloud":
@@ -428,6 +428,8 @@ for key, value in model_cost.items():
         watsonx_models.append(key)
     elif value.get("litellm_provider") == "gemini":
         gemini_models.append(key)
+    elif value.get("litellm_provider") == "fireworks_ai":
+        fireworks_ai_models.append(key)
 # known openai compatible endpoints - we'll eventually move this list to the model_prices_and_context_window.json dictionary
 openai_compatible_endpoints: List = [
     "api.perplexity.ai",
@@ -450,6 +452,7 @@ openai_compatible_providers: List = [
     "mistral",
     "groq",
     "nvidia_nim",
+    "cerebras",
     "volcengine",
     "codestral",
     "deepseek",
@@ -674,6 +677,7 @@ provider_list: List = [
     "azure_text",
     "azure_ai",
     "sagemaker",
+    "sagemaker_chat",
     "bedrock",
     "vllm",
     "nlp_cloud",
@@ -687,6 +691,7 @@ provider_list: List = [
     "mistral",
     "groq",
     "nvidia_nim",
+    "cerebras",
     "volcengine",
     "codestral",
     "text-completion-codestral",
@@ -708,7 +713,7 @@ provider_list: List = [
 
 models_by_provider: dict = {
     "openai": open_ai_chat_completion_models + open_ai_text_completion_models,
-    "cohere": cohere_models,
+    "cohere": cohere_models + cohere_chat_models,
     "cohere_chat": cohere_chat_models,
     "anthropic": anthropic_models,
     "replicate": replicate_models,
@@ -730,6 +735,7 @@ models_by_provider: dict = {
     "maritalk": maritalk_models,
     "watsonx": watsonx_models,
     "gemini": gemini_models,
+    "fireworks_ai": fireworks_ai_models,
 }
 
 # mapping for those models which have larger equivalents
@@ -823,6 +829,7 @@ from .utils import (
     TranscriptionResponse,
     TextCompletionResponse,
     get_provider_fields,
+    ModelResponseListIterator,
 )
 
 ALL_LITELLM_RESPONSE_TYPES = [
@@ -836,12 +843,12 @@ ALL_LITELLM_RESPONSE_TYPES = [
 from .types.utils import ImageObject
 from .llms.custom_llm import CustomLLM
 from .llms.huggingface_restapi import HuggingfaceConfig
-from .llms.anthropic import AnthropicConfig
+from .llms.anthropic.chat import AnthropicConfig
+from .llms.anthropic.completion import AnthropicTextConfig
 from .llms.databricks import DatabricksConfig, DatabricksEmbeddingConfig
 from .llms.predibase import PredibaseConfig
-from .llms.anthropic_text import AnthropicTextConfig
 from .llms.replicate import ReplicateConfig
-from .llms.cohere import CohereConfig
+from .llms.cohere.completion import CohereConfig
 from .llms.clarifai import ClarifaiConfig
 from .llms.ai21 import AI21Config
 from .llms.together_ai import TogetherAIConfig
@@ -851,11 +858,25 @@ from .llms.gemini import GeminiConfig
 from .llms.nlp_cloud import NLPCloudConfig
 from .llms.aleph_alpha import AlephAlphaConfig
 from .llms.petals import PetalsConfig
-from .llms.vertex_httpx import VertexGeminiConfig, GoogleAIStudioGeminiConfig
-from .llms.vertex_ai import VertexAIConfig, VertexAITextEmbeddingConfig
-from .llms.vertex_ai_anthropic import VertexAIAnthropicConfig
-from .llms.vertex_ai_partner import VertexAILlama3Config
-from .llms.sagemaker import SagemakerConfig
+from .llms.vertex_ai_and_google_ai_studio.gemini.vertex_and_google_ai_studio_gemini import (
+    VertexGeminiConfig,
+    GoogleAIStudioGeminiConfig,
+    VertexAIConfig,
+)
+from .llms.vertex_ai_and_google_ai_studio.vertex_embeddings.embedding_handler import (
+    VertexAITextEmbeddingConfig,
+)
+from .llms.vertex_ai_and_google_ai_studio.vertex_ai_anthropic import (
+    VertexAIAnthropicConfig,
+)
+from .llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.llama3.transformation import (
+    VertexAILlama3Config,
+)
+from .llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.ai21.transformation import (
+    VertexAIAi21Config,
+)
+
+from .llms.sagemaker.sagemaker import SagemakerConfig
 from .llms.ollama import OllamaConfig
 from .llms.ollama_chat import OllamaChatConfig
 from .llms.maritalk import MaritTalkConfig
@@ -863,6 +884,7 @@ from .llms.bedrock_httpx import (
     AmazonCohereChatConfig,
     AmazonConverseConfig,
     BEDROCK_CONVERSE_MODELS,
+    bedrock_tool_name_mappings,
 )
 from .llms.bedrock import (
     AmazonTitanConfig,
@@ -885,6 +907,7 @@ from .llms.openai import (
     AzureAIStudioConfig,
 )
 from .llms.nvidia_nim import NvidiaNimConfig
+from .llms.cerebras.chat import CerebrasConfig
 from .llms.fireworks_ai import FireworksAIConfig
 from .llms.volcengine import VolcEngineConfig
 from .llms.text_completion_codestral import MistralTextCompletionConfig
@@ -923,6 +946,7 @@ from .proxy.proxy_cli import run_server
 from .router import Router
 from .assistants.main import *
 from .batches.main import *
+from .rerank_api.main import *
 from .fine_tuning.main import *
 from .files.main import *
 from .scheduler import *

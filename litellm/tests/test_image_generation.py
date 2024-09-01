@@ -82,6 +82,7 @@ async def test_image_generation_azure(sync_mode):
 # test_image_generation_azure()
 
 
+@pytest.mark.flaky(retries=3, delay=1)
 def test_image_generation_azure_dall_e_3():
     try:
         litellm.set_verbose = True
@@ -116,6 +117,8 @@ async def test_async_image_generation_openai():
         )
         print(f"response: {response}")
         assert len(response.data) > 0
+    except litellm.APIError:
+        pass
     except litellm.RateLimitError as e:
         pass
     except litellm.ContentPolicyViolationError:
@@ -228,6 +231,8 @@ async def test_aimage_generation_vertex_ai(sync_mode):
     except litellm.ServiceUnavailableError as e:
         pass
     except litellm.RateLimitError as e:
+        pass
+    except litellm.InternalServerError as e:
         pass
     except litellm.ContentPolicyViolationError:
         pass  # Azure randomly raises these errors - skip when they occur

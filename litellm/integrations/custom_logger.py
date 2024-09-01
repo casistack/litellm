@@ -58,6 +58,13 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
     def pre_call_check(self, deployment: dict) -> Optional[dict]:
         pass
 
+    #### Fallback Events - router/proxy only ####
+    async def log_success_fallback_event(self, original_model_group: str, kwargs: dict):
+        pass
+
+    async def log_failure_fallback_event(self, original_model_group: str, kwargs: dict):
+        pass
+
     #### ADAPTERS #### Allow calling 100+ LLMs in custom format - https://github.com/BerriAI/litellm/pulls
 
     def translate_completion_input_params(
@@ -102,6 +109,7 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
             "moderation",
             "audio_transcription",
             "pass_through_endpoint",
+            "rerank",
         ],
     ) -> Optional[
         Union[Exception, str, dict]
@@ -115,6 +123,7 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
 
     async def async_post_call_success_hook(
         self,
+        data: dict,
         user_api_key_dict: UserAPIKeyAuth,
         response,
     ):

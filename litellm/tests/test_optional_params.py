@@ -19,7 +19,11 @@ from litellm.types.completion import (
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
 )
-from litellm.utils import get_optional_params, get_optional_params_embeddings
+from litellm.utils import (
+    get_optional_params,
+    get_optional_params_embeddings,
+    get_optional_params_image_gen,
+)
 
 ## get_optional_params_embeddings
 ### Models: OpenAI, Azure, Bedrock
@@ -67,6 +71,16 @@ def test_bedrock_optional_params_embeddings():
     litellm.drop_params = True
     optional_params = get_optional_params_embeddings(
         user="John", encoding_format=None, custom_llm_provider="bedrock"
+    )
+    assert len(optional_params) == 0
+
+
+def test_google_ai_studio_optional_params_embeddings():
+    optional_params = get_optional_params_embeddings(
+        user="John",
+        encoding_format=None,
+        custom_llm_provider="gemini",
+        drop_params=True,
     )
     assert len(optional_params) == 0
 
@@ -287,7 +301,7 @@ def test_azure_tool_choice(api_version):
     else:
         assert (
             "tool_choice" not in optional_params
-        ), "tool_choice={} for api version={}".format(
+        ), "tool choice should not be present. Got - tool_choice={} for api version={}".format(
             optional_params["tool_choice"], api_version
         )
 
@@ -301,7 +315,7 @@ def test_dynamic_drop_params(drop_params):
         optional_params = litellm.utils.get_optional_params(
             model="command-r",
             custom_llm_provider="cohere",
-            response_format="json",
+            response_format={"type": "json"},
             drop_params=drop_params,
         )
     else:
@@ -309,7 +323,7 @@ def test_dynamic_drop_params(drop_params):
             optional_params = litellm.utils.get_optional_params(
                 model="command-r",
                 custom_llm_provider="cohere",
-                response_format="json",
+                response_format={"type": "json"},
                 drop_params=drop_params,
             )
             pytest.fail("Expected to fail")
@@ -345,7 +359,7 @@ def test_drop_params_parallel_tool_calls(model, provider, should_drop):
     response = litellm.utils.get_optional_params(
         model=model,
         custom_llm_provider=provider,
-        response_format="json",
+        response_format={"type": "json"},
         parallel_tool_calls=True,
         drop_params=True,
     )
@@ -389,7 +403,7 @@ def test_dynamic_drop_additional_params(drop_params):
         optional_params = litellm.utils.get_optional_params(
             model="command-r",
             custom_llm_provider="cohere",
-            response_format="json",
+            response_format={"type": "json"},
             additional_drop_params=["response_format"],
         )
     else:
@@ -397,7 +411,7 @@ def test_dynamic_drop_additional_params(drop_params):
             optional_params = litellm.utils.get_optional_params(
                 model="command-r",
                 custom_llm_provider="cohere",
-                response_format="json",
+                response_format={"type": "json"},
             )
             pytest.fail("Expected to fail")
         except Exception as e:
@@ -430,7 +444,6 @@ def test_get_optional_params_image_gen():
     print(response)
 
     assert "aws_region_name" not in response
-
     response = litellm.utils.get_optional_params_image_gen(
         aws_region_name="us-east-1", custom_llm_provider="bedrock"
     )
@@ -438,3 +451,107 @@ def test_get_optional_params_image_gen():
     print(response)
 
     assert "aws_region_name" in response
+
+
+def test_bedrock_optional_params_embeddings_provider_specific_params():
+    optional_params = get_optional_params_embeddings(
+        custom_llm_provider="huggingface",
+        wait_for_model=True,
+    )
+    assert len(optional_params) == 1
+
+
+def test_get_optional_params_num_retries():
+    """
+    Relevant issue - https://github.com/BerriAI/litellm/issues/5124
+    """
+    with patch("litellm.main.get_optional_params", new=MagicMock()) as mock_client:
+        _ = litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "Hello world"}],
+            num_retries=10,
+        )
+
+        mock_client.assert_called()
+
+        print(f"mock_client.call_args: {mock_client.call_args}")
+        assert mock_client.call_args.kwargs["max_retries"] == 10
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "vertex_ai",
+        "vertex_ai_beta",
+    ],
+)
+def test_vertex_safety_settings(provider):
+    litellm.vertex_ai_safety_settings = [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE",
+        },
+    ]
+
+    optional_params = get_optional_params(
+        model="gemini-1.5-pro", custom_llm_provider=provider
+    )
+    assert len(optional_params) == 1
+
+
+@pytest.mark.parametrize(
+    "model, provider, expectedAddProp",
+    [("gemini-1.5-pro", "vertex_ai_beta", False), ("gpt-3.5-turbo", "openai", True)],
+)
+def test_parse_additional_properties_json_schema(model, provider, expectedAddProp):
+    optional_params = get_optional_params(
+        model=model,
+        custom_llm_provider=provider,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "math_reasoning",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "explanation": {"type": "string"},
+                                    "output": {"type": "string"},
+                                },
+                                "required": ["explanation", "output"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "final_answer": {"type": "string"},
+                    },
+                    "required": ["steps", "final_answer"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        },
+    )
+
+    print(optional_params)
+
+    if provider == "vertex_ai_beta":
+        schema = optional_params["response_schema"]
+    elif provider == "openai":
+        schema = optional_params["response_format"]["json_schema"]["schema"]
+    assert ("additionalProperties" in schema) == expectedAddProp

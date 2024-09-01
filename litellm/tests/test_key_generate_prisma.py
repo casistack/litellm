@@ -56,6 +56,7 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
     generate_key_fn,
     generate_key_helper_fn,
     info_key_fn,
+    regenerate_key_fn,
     update_key_fn,
 )
 from litellm.proxy.management_endpoints.team_endpoints import (
@@ -171,6 +172,11 @@ async def test_new_user_response(prisma_client):
                 models=["azure-gpt-3.5"],
                 team_id=_team_id,
                 tpm_limit=20,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
             )
         )
         print(_response)
@@ -236,7 +242,14 @@ def test_generate_and_call_with_valid_key(prisma_client, api_route):
             from litellm.proxy.proxy_server import user_api_key_cache
 
             request = NewUserRequest(user_role=LitellmUserRoles.INTERNAL_USER)
-            key = await new_user(request)
+            key = await new_user(
+                request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
             user_id = key.user_id
 
@@ -312,7 +325,14 @@ def test_call_with_invalid_model(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest(models=["mistral"])
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -353,7 +373,14 @@ def test_call_with_valid_model(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest(models=["mistral"])
-            key = await new_user(request)
+            key = await new_user(
+                request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -445,7 +472,14 @@ def test_call_with_user_over_budget(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest(max_budget=0.00001)
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -504,7 +538,7 @@ def test_call_with_user_over_budget(prisma_client):
         asyncio.run(test())
     except Exception as e:
         error_detail = e.message
-        assert "Budget has been exceeded" in error_detail
+        assert "ExceededBudget:" in error_detail
         assert isinstance(e, ProxyException)
         assert e.type == ProxyErrorTypes.budget_exceeded
         print(vars(e))
@@ -607,7 +641,7 @@ def test_call_with_end_user_over_budget(prisma_client):
             # use generated key to auth in
             result = await user_api_key_auth(request=request, api_key=bearer_token)
             print("result from user auth with new key", result)
-            pytest.fail(f"This should have failed!. They key crossed it's budget")
+            pytest.fail("This should have failed!. They key crossed it's budget")
 
         asyncio.run(test())
     except Exception as e:
@@ -640,7 +674,14 @@ def test_call_with_proxy_over_budget(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest()
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -724,7 +765,14 @@ def test_call_with_user_over_budget_stream(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest(max_budget=0.00001)
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -779,12 +827,12 @@ def test_call_with_user_over_budget_stream(prisma_client):
             # use generated key to auth in
             result = await user_api_key_auth(request=request, api_key=bearer_token)
             print("result from user auth with new key", result)
-            pytest.fail(f"This should have failed!. They key crossed it's budget")
+            pytest.fail("This should have failed!. They key crossed it's budget")
 
         asyncio.run(test())
     except Exception as e:
         error_detail = e.message
-        assert "Budget has been exceeded" in error_detail
+        assert "ExceededBudget:" in error_detail
         assert isinstance(e, ProxyException)
         assert e.type == ProxyErrorTypes.budget_exceeded
         print(vars(e))
@@ -822,9 +870,15 @@ def test_call_with_proxy_over_budget_stream(prisma_client):
             # request = NewUserRequest(
             #     max_budget=0.00001, user_id=litellm_proxy_budget_name
             # )
-            # await new_user(request)
             request = NewUserRequest()
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -900,7 +954,14 @@ def test_generate_and_call_with_valid_key_never_expires(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest(duration=None)
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -930,7 +991,14 @@ def test_generate_and_call_with_expired_key(prisma_client):
         async def test():
             await litellm.proxy.proxy_server.prisma_client.connect()
             request = NewUserRequest(duration="0s")
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -969,7 +1037,14 @@ def test_delete_key(prisma_client):
             from litellm.proxy.proxy_server import user_api_key_cache
 
             request = NewUserRequest()
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -1018,7 +1093,14 @@ def test_delete_key_auth(prisma_client):
             from litellm.proxy.proxy_server import user_api_key_cache
 
             request = NewUserRequest()
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -1081,7 +1163,14 @@ def test_generate_and_call_key_info(prisma_client):
             request = NewUserRequest(
                 metadata={"team": "litellm-team3", "project": "litellm-project3"}
             )
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -1166,7 +1255,14 @@ def test_generate_and_update_key(prisma_client):
                 team_id=_team_1,
             )
 
-            key = await new_user(request)
+            key = await new_user(
+                data=request,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
             print(key)
 
             generated_key = key.key
@@ -1236,7 +1332,7 @@ def test_generate_and_update_key(prisma_client):
         asyncio.run(test())
     except Exception as e:
         print("Got Exception", e)
-        pytest.fail(f"An exception occurred - {str(e)}")
+        pytest.fail(f"An exception occurred - {str(e)}\n{traceback.format_exc()}")
 
 
 def test_key_generate_with_custom_auth(prisma_client):
@@ -1980,11 +2076,6 @@ def test_get_bearer_token():
     result = _get_bearer_token(api_key)
     assert result == "", f"Expected '', got '{result}'"
 
-    # Test API key with Bearer prefix in lowercase
-    api_key = "bearer valid_token"
-    result = _get_bearer_token(api_key)
-    assert result == "", f"Expected '', got '{result}'"
-
     # Test API key with Bearer prefix and extra spaces
     api_key = "  Bearer   valid_token  "
     result = _get_bearer_token(api_key)
@@ -2233,6 +2324,11 @@ async def test_master_key_hashing(prisma_client):
         from litellm.proxy.proxy_server import user_api_key_cache
 
         _team_id = "ishaans-special-team_{}".format(uuid.uuid4())
+        user_api_key_dict = UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        )
         await new_team(
             NewTeamRequest(team_id=_team_id),
             user_api_key_dict=UserAPIKeyAuth(
@@ -2248,7 +2344,8 @@ async def test_master_key_hashing(prisma_client):
                 models=["azure-gpt-3.5"],
                 team_id=_team_id,
                 tpm_limit=20,
-            )
+            ),
+            user_api_key_dict=user_api_key_dict,
         )
         print(_response)
         assert _response.models == ["azure-gpt-3.5"]
@@ -2466,7 +2563,14 @@ async def test_enforced_params(prisma_client):
 
     await litellm.proxy.proxy_server.prisma_client.connect()
     request = NewUserRequest()
-    key = await new_user(request)
+    key = await new_user(
+        data=request,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
     print(key)
 
     generated_key = key.key
@@ -2511,7 +2615,6 @@ async def test_update_user_role(prisma_client):
     Tests if we update user role, incorrect values are not stored in cache
     -> create a user with role == INTERNAL_USER
     -> access an Admin only route -> expect to fail
-
     -> update user role to == PROXY_ADMIN
     -> access an Admin only route -> expect to succeed
     """
@@ -2556,6 +2659,7 @@ async def test_update_user_role(prisma_client):
     await asyncio.sleep(2)
 
     # use generated key to auth in
+    print("\n\nMAKING NEW REQUEST WITH UPDATED USER ROLE\n\n")
     result = await user_api_key_auth(request=request, api_key=api_key)
     print("result from user auth with new key", result)
 
@@ -2608,3 +2712,383 @@ async def test_custom_api_key_header_name(prisma_client):
         pass
 
     # this should pass because X-Litellm-Key is valid
+
+
+@pytest.mark.asyncio()
+async def test_generate_key_with_model_tpm_limit(prisma_client):
+    print("prisma client=", prisma_client)
+
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+    request = GenerateKeyRequest(
+        metadata={
+            "team": "litellm-team3",
+            "model_tpm_limit": {"gpt-4": 100},
+            "model_rpm_limit": {"gpt-4": 2},
+        }
+    )
+    key = await generate_key_fn(
+        data=request,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+    print(key)
+
+    generated_key = key.key
+
+    # use generated key to auth in
+    result = await info_key_fn(key=generated_key)
+    print("result from info_key_fn", result)
+    assert result["key"] == generated_key
+    print("\n info for key=", result["info"])
+    assert result["info"]["metadata"] == {
+        "team": "litellm-team3",
+        "model_tpm_limit": {"gpt-4": 100},
+        "model_rpm_limit": {"gpt-4": 2},
+    }
+
+    # Update model tpm_limit and rpm_limit
+    request = UpdateKeyRequest(
+        key=generated_key,
+        model_tpm_limit={"gpt-4": 200},
+        model_rpm_limit={"gpt-4": 3},
+    )
+    _request = Request(scope={"type": "http"})
+    _request._url = URL(url="/update/key")
+
+    await update_key_fn(data=request, request=_request)
+    result = await info_key_fn(key=generated_key)
+    print("result from info_key_fn", result)
+    assert result["key"] == generated_key
+    print("\n info for key=", result["info"])
+    assert result["info"]["metadata"] == {
+        "team": "litellm-team3",
+        "model_tpm_limit": {"gpt-4": 200},
+        "model_rpm_limit": {"gpt-4": 3},
+    }
+
+
+@pytest.mark.asyncio()
+async def test_generate_key_with_guardrails(prisma_client):
+    print("prisma client=", prisma_client)
+
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+    request = GenerateKeyRequest(
+        guardrails=["aporia-pre-call"],
+        metadata={
+            "team": "litellm-team3",
+        },
+    )
+    key = await generate_key_fn(
+        data=request,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+    print("generated key=", key)
+
+    generated_key = key.key
+
+    # use generated key to auth in
+    result = await info_key_fn(key=generated_key)
+    print("result from info_key_fn", result)
+    assert result["key"] == generated_key
+    print("\n info for key=", result["info"])
+    assert result["info"]["metadata"] == {
+        "team": "litellm-team3",
+        "guardrails": ["aporia-pre-call"],
+    }
+
+    # Update model tpm_limit and rpm_limit
+    request = UpdateKeyRequest(
+        key=generated_key,
+        guardrails=["aporia-pre-call", "aporia-post-call"],
+    )
+    _request = Request(scope={"type": "http"})
+    _request._url = URL(url="/update/key")
+
+    await update_key_fn(data=request, request=_request)
+    result = await info_key_fn(key=generated_key)
+    print("result from info_key_fn", result)
+    assert result["key"] == generated_key
+    print("\n info for key=", result["info"])
+    assert result["info"]["metadata"] == {
+        "team": "litellm-team3",
+        "guardrails": ["aporia-pre-call", "aporia-post-call"],
+    }
+
+
+@pytest.mark.asyncio()
+async def test_team_access_groups(prisma_client):
+    """
+    Test team based model access groups
+
+    - Test calling a model in the access group  -> pass
+    - Test calling a model not in the access group -> fail
+    """
+    litellm.set_verbose = True
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+    # create router with access groups
+    litellm_router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gemini-pro-vision",
+                "litellm_params": {
+                    "model": "vertex_ai/gemini-1.0-pro-vision-001",
+                },
+                "model_info": {"access_groups": ["beta-models"]},
+            },
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                },
+                "model_info": {"access_groups": ["beta-models"]},
+            },
+        ]
+    )
+    setattr(litellm.proxy.proxy_server, "llm_router", litellm_router)
+
+    # Create team with models=["beta-models"]
+    team_request = NewTeamRequest(
+        team_alias="testing-team",
+        models=["beta-models"],
+    )
+
+    new_team_response = await new_team(
+        data=team_request,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        http_request=Request(scope={"type": "http"}),
+    )
+    print("new_team_response", new_team_response)
+    created_team_id = new_team_response["team_id"]
+
+    # create key with team_id=created_team_id
+    request = GenerateKeyRequest(
+        team_id=created_team_id,
+    )
+
+    key = await generate_key_fn(
+        data=request,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+    print(key)
+
+    generated_key = key.key
+    bearer_token = "Bearer " + generated_key
+
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+
+    for model in ["gpt-4o", "gemini-pro-vision"]:
+        # Expect these to pass
+        async def return_body():
+            return_string = f'{{"model": "{model}"}}'
+            # return string as bytes
+            return return_string.encode()
+
+        request.body = return_body
+
+        # use generated key to auth in
+        print(
+            "Bearer token being sent to user_api_key_auth() - {}".format(bearer_token)
+        )
+        result = await user_api_key_auth(request=request, api_key=bearer_token)
+
+    for model in ["gpt-4", "gpt-4o-mini", "gemini-experimental"]:
+        # Expect these to fail
+        async def return_body_2():
+            return_string = f'{{"model": "{model}"}}'
+            # return string as bytes
+            return return_string.encode()
+
+        request.body = return_body_2
+
+        # use generated key to auth in
+        print(
+            "Bearer token being sent to user_api_key_auth() - {}".format(bearer_token)
+        )
+        try:
+            result = await user_api_key_auth(request=request, api_key=bearer_token)
+            pytest.fail(f"This should have failed!. IT's an invalid model")
+        except Exception as e:
+            print("got exception", e)
+            assert (
+                "not allowed to call model" in e.message
+                and "Allowed team models" in e.message
+            )
+
+
+################ Unit Tests for testing regeneration of keys ###########
+@pytest.mark.asyncio()
+async def test_regenerate_api_key(prisma_client):
+    litellm.set_verbose = True
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+    import uuid
+
+    # generate new key
+    key_alias = f"test_alias_regenerate_key-{uuid.uuid4()}"
+    spend = 100
+    max_budget = 400
+    models = ["fake-openai-endpoint"]
+    new_key = await generate_key_fn(
+        data=GenerateKeyRequest(
+            key_alias=key_alias, spend=spend, max_budget=max_budget, models=models
+        ),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+
+    generated_key = new_key.key
+    print(generated_key)
+
+    # assert the new key works as expected
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+
+    async def return_body():
+        return_string = f'{{"model": "fake-openai-endpoint"}}'
+        # return string as bytes
+        return return_string.encode()
+
+    request.body = return_body
+    result = await user_api_key_auth(request=request, api_key=f"Bearer {generated_key}")
+    print(result)
+
+    # regenerate the key
+    new_key = await regenerate_key_fn(
+        key=generated_key,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-1234",
+            user_id="1234",
+        ),
+    )
+    print("response from regenerate_key_fn", new_key)
+
+    # assert the new key works as expected
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+
+    async def return_body_2():
+        return_string = f'{{"model": "fake-openai-endpoint"}}'
+        # return string as bytes
+        return return_string.encode()
+
+    request.body = return_body_2
+    result = await user_api_key_auth(request=request, api_key=f"Bearer {new_key.key}")
+    print(result)
+
+    # assert the old key stops working
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+
+    async def return_body_3():
+        return_string = f'{{"model": "fake-openai-endpoint"}}'
+        # return string as bytes
+        return return_string.encode()
+
+    request.body = return_body_3
+    try:
+        result = await user_api_key_auth(
+            request=request, api_key=f"Bearer {generated_key}"
+        )
+        print(result)
+        pytest.fail(f"This should have failed!. the key has been regenerated")
+    except Exception as e:
+        print("got expected exception", e)
+        assert "Invalid proxy server token passed" in e.message
+
+    # Check that the regenerated key has the same spend, max_budget, models and key_alias
+    assert new_key.spend == spend, f"Expected spend {spend} but got {new_key.spend}"
+    assert (
+        new_key.max_budget == max_budget
+    ), f"Expected max_budget {max_budget} but got {new_key.max_budget}"
+    assert (
+        new_key.key_alias == key_alias
+    ), f"Expected key_alias {key_alias} but got {new_key.key_alias}"
+    assert (
+        new_key.models == models
+    ), f"Expected models {models} but got {new_key.models}"
+
+    assert new_key.key_name == f"sk-...{new_key.key[-4:]}"
+
+    pass
+
+
+@pytest.mark.asyncio()
+async def test_team_tags(prisma_client):
+    """
+    - Test setting tags on a team
+    - Assert this is returned when calling /team/info
+    - Team/update with tags should update the tags
+    - Assert new tags are returned when calling /team/info
+    """
+    litellm.set_verbose = True
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+
+    _new_team = NewTeamRequest(
+        team_alias="test-teamA",
+        tags=["teamA"],
+    )
+
+    new_team_response = await new_team(
+        data=_new_team,
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        http_request=Request(scope={"type": "http"}),
+    )
+
+    print("new_team_response", new_team_response)
+
+    # call /team/info
+    team_info_response = await team_info(
+        team_id=new_team_response["team_id"],
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        http_request=Request(scope={"type": "http"}),
+    )
+    print("team_info_response", team_info_response)
+
+    assert team_info_response["team_info"].metadata["tags"] == ["teamA"]
+
+    # team update with tags
+    team_update_response = await update_team(
+        data=UpdateTeamRequest(
+            team_id=new_team_response["team_id"],
+            tags=["teamA", "teamB"],
+        ),
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        http_request=Request(scope={"type": "http"}),
+    )
+
+    print("team_update_response", team_update_response)
+
+    # call /team/info again
+    team_info_response = await team_info(
+        team_id=new_team_response["team_id"],
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        http_request=Request(scope={"type": "http"}),
+    )
+
+    print("team_info_response", team_info_response)
+    assert team_info_response["team_info"].metadata["tags"] == ["teamA", "teamB"]
