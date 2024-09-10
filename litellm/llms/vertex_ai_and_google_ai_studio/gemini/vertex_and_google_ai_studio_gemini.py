@@ -13,7 +13,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import httpx  # type: ignore
 import requests  # type: ignore
-from openai.types.image import Image
 
 import litellm
 import litellm.litellm_core_utils
@@ -769,7 +768,8 @@ async def make_call(
 
 
 def make_sync_call(
-    client: Optional[HTTPHandler],
+    client: Optional[HTTPHandler],  # module-level client
+    gemini_client: Optional[HTTPHandler],  # if passed by user
     api_base: str,
     headers: dict,
     data: str,
@@ -777,6 +777,8 @@ def make_sync_call(
     messages: list,
     logging_obj,
 ):
+    if gemini_client is not None:
+        client = gemini_client
     if client is None:
         client = HTTPHandler()  # Create a new client if none provided
 
@@ -1062,10 +1064,17 @@ class VertexLLM(BaseLLM):
                 os.getcwd(),
             )
 
-            if os.path.exists(credentials):
-                json_obj = json.load(open(credentials))
-            else:
-                json_obj = json.loads(credentials)
+            try:
+                if os.path.exists(credentials):
+                    json_obj = json.load(open(credentials))
+                else:
+                    json_obj = json.loads(credentials)
+            except Exception:
+                raise Exception(
+                    "Unable to load vertex credentials from environment. Got={}".format(
+                        credentials
+                    )
+                )
 
             # Check if the JSON object contains Workload Identity Federation configuration
             if "type" in json_obj and json_obj["type"] == "external_account":
@@ -1206,7 +1215,7 @@ class VertexLLM(BaseLLM):
             api_base is not None
         ):  # for cloudflare ai gateway - https://github.com/BerriAI/litellm/issues/4317
             if custom_llm_provider == "gemini":
-                url = "{}/{}".format(api_base, endpoint)
+                url = "{}:{}".format(api_base, endpoint)
                 auth_header = (
                     gemini_api_key  # cloudflare expects api key as bearer token
                 )
@@ -1439,7 +1448,11 @@ class VertexLLM(BaseLLM):
                 completion_stream=None,
                 make_call=partial(
                     make_sync_call,
-                    client=None,
+                    gemini_client=(
+                        client
+                        if client is not None and isinstance(client, HTTPHandler)
+                        else None
+                    ),
                     api_base=url,
                     data=request_data_str,
                     model=model,
@@ -1488,252 +1501,13 @@ class VertexLLM(BaseLLM):
             encoding=encoding,
         )
 
-    def image_generation(
-        self,
-        prompt: str,
-        vertex_project: Optional[str],
-        vertex_location: Optional[str],
-        vertex_credentials: Optional[str],
-        model_response: litellm.ImageResponse,
-        model: Optional[
-            str
-        ] = "imagegeneration",  # vertex ai uses imagegeneration as the default model
-        client: Optional[Any] = None,
-        optional_params: Optional[dict] = None,
-        timeout: Optional[int] = None,
-        logging_obj=None,
-        aimg_generation=False,
-    ):
-        if aimg_generation is True:
-            return self.aimage_generation(
-                prompt=prompt,
-                vertex_project=vertex_project,
-                vertex_location=vertex_location,
-                vertex_credentials=vertex_credentials,
-                model=model,
-                client=client,
-                optional_params=optional_params,
-                timeout=timeout,
-                logging_obj=logging_obj,
-                model_response=model_response,
-            )
-
-        if client is None:
-            _params = {}
-            if timeout is not None:
-                if isinstance(timeout, float) or isinstance(timeout, int):
-                    _httpx_timeout = httpx.Timeout(timeout)
-                    _params["timeout"] = _httpx_timeout
-            else:
-                _params["timeout"] = httpx.Timeout(timeout=600.0, connect=5.0)
-
-            sync_handler: HTTPHandler = HTTPHandler(**_params)  # type: ignore
-        else:
-            sync_handler = client  # type: ignore
-
-        url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:predict"
-
-        auth_header, _ = self._ensure_access_token(
-            credentials=vertex_credentials, project_id=vertex_project
-        )
-        optional_params = optional_params or {
-            "sampleCount": 1
-        }  # default optional params
-
-        request_data = {
-            "instances": [{"prompt": prompt}],
-            "parameters": optional_params,
-        }
-
-        request_str = f"\n curl -X POST \\\n -H \"Authorization: Bearer {auth_header[:10] + 'XXXXXXXXXX'}\" \\\n -H \"Content-Type: application/json; charset=utf-8\" \\\n -d {request_data} \\\n \"{url}\""
-        logging_obj.pre_call(
-            input=prompt,
-            api_key=None,
-            additional_args={
-                "complete_input_dict": optional_params,
-                "request_str": request_str,
-            },
-        )
-
-        logging_obj.pre_call(
-            input=prompt,
-            api_key=None,
-            additional_args={
-                "complete_input_dict": optional_params,
-                "request_str": request_str,
-            },
-        )
-
-        response = sync_handler.post(
-            url=url,
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "Authorization": f"Bearer {auth_header}",
-            },
-            data=json.dumps(request_data),
-        )
-
-        if response.status_code != 200:
-            raise Exception(f"Error: {response.status_code} {response.text}")
-        """
-        Vertex AI Image generation response example:
-        {
-            "predictions": [
-                {
-                "bytesBase64Encoded": "BASE64_IMG_BYTES",
-                "mimeType": "image/png"
-                },
-                {
-                "mimeType": "image/png",
-                "bytesBase64Encoded": "BASE64_IMG_BYTES"
-                }
-            ]
-        }
-        """
-
-        _json_response = response.json()
-        if "predictions" not in _json_response:
-            raise litellm.InternalServerError(
-                message=f"image generation response does not contain 'predictions', got {_json_response}",
-                llm_provider="vertex_ai",
-                model=model,
-            )
-        _predictions = _json_response["predictions"]
-
-        _response_data: List[Image] = []
-        for _prediction in _predictions:
-            _bytes_base64_encoded = _prediction["bytesBase64Encoded"]
-            image_object = Image(b64_json=_bytes_base64_encoded)
-            _response_data.append(image_object)
-
-        model_response.data = _response_data
-
-        return model_response
-
-    async def aimage_generation(
-        self,
-        prompt: str,
-        vertex_project: Optional[str],
-        vertex_location: Optional[str],
-        vertex_credentials: Optional[str],
-        model_response: litellm.ImageResponse,
-        model: Optional[
-            str
-        ] = "imagegeneration",  # vertex ai uses imagegeneration as the default model
-        client: Optional[AsyncHTTPHandler] = None,
-        optional_params: Optional[dict] = None,
-        timeout: Optional[int] = None,
-        logging_obj=None,
-    ):
-        response = None
-        if client is None:
-            _params = {}
-            if timeout is not None:
-                if isinstance(timeout, float) or isinstance(timeout, int):
-                    _httpx_timeout = httpx.Timeout(timeout)
-                    _params["timeout"] = _httpx_timeout
-            else:
-                _params["timeout"] = httpx.Timeout(timeout=600.0, connect=5.0)
-
-            self.async_handler = AsyncHTTPHandler(**_params)  # type: ignore
-        else:
-            self.async_handler = client  # type: ignore
-
-        # make POST request to
-        # https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/us-central1/publishers/google/models/imagegeneration:predict
-        url = f"https://{vertex_location}-aiplatform.googleapis.com/v1/projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model}:predict"
-
-        """
-        Docs link: https://console.cloud.google.com/vertex-ai/publishers/google/model-garden/imagegeneration?project=adroit-crow-413218
-        curl -X POST \
-        -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-        -H "Content-Type: application/json; charset=utf-8" \
-        -d {
-            "instances": [
-                {
-                    "prompt": "a cat"
-                }
-            ],
-            "parameters": {
-                "sampleCount": 1
-            }
-        } \
-        "https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/us-central1/publishers/google/models/imagegeneration:predict"
-        """
-        auth_header, _ = self._ensure_access_token(
-            credentials=vertex_credentials, project_id=vertex_project
-        )
-        optional_params = optional_params or {
-            "sampleCount": 1
-        }  # default optional params
-
-        request_data = {
-            "instances": [{"prompt": prompt}],
-            "parameters": optional_params,
-        }
-
-        request_str = f"\n curl -X POST \\\n -H \"Authorization: Bearer {auth_header[:10] + 'XXXXXXXXXX'}\" \\\n -H \"Content-Type: application/json; charset=utf-8\" \\\n -d {request_data} \\\n \"{url}\""
-        logging_obj.pre_call(
-            input=prompt,
-            api_key=None,
-            additional_args={
-                "complete_input_dict": optional_params,
-                "request_str": request_str,
-            },
-        )
-
-        response = await self.async_handler.post(
-            url=url,
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "Authorization": f"Bearer {auth_header}",
-            },
-            data=json.dumps(request_data),
-        )
-
-        if response.status_code != 200:
-            raise Exception(f"Error: {response.status_code} {response.text}")
-        """
-        Vertex AI Image generation response example:
-        {
-            "predictions": [
-                {
-                "bytesBase64Encoded": "BASE64_IMG_BYTES",
-                "mimeType": "image/png"
-                },
-                {
-                "mimeType": "image/png",
-                "bytesBase64Encoded": "BASE64_IMG_BYTES"
-                }
-            ]
-        }
-        """
-
-        _json_response = response.json()
-
-        if "predictions" not in _json_response:
-            raise litellm.InternalServerError(
-                message=f"image generation response does not contain 'predictions', got {_json_response}",
-                llm_provider="vertex_ai",
-                model=model,
-            )
-
-        _predictions = _json_response["predictions"]
-
-        _response_data: List[Image] = []
-        for _prediction in _predictions:
-            _bytes_base64_encoded = _prediction["bytesBase64Encoded"]
-            image_object = Image(b64_json=_bytes_base64_encoded)
-            _response_data.append(image_object)
-
-        model_response.data = _response_data
-
-        return model_response
-
 
 class ModelResponseIterator:
     def __init__(self, streaming_response, sync_stream: bool):
         self.streaming_response = streaming_response
+        self.chunk_type: Literal["valid_json", "accumulated_json"] = "valid_json"
+        self.accumulated_json = ""
+        self.sent_first_chunk = False
 
     def chunk_parser(self, chunk: dict) -> GenericStreamingChunk:
         try:
@@ -1803,29 +1577,80 @@ class ModelResponseIterator:
         self.response_iterator = self.streaming_response
         return self
 
+    def handle_valid_json_chunk(self, chunk: str) -> GenericStreamingChunk:
+        chunk = chunk.strip()
+        try:
+            json_chunk = json.loads(chunk)
+
+        except json.JSONDecodeError as e:
+            if (
+                self.sent_first_chunk is False
+            ):  # only check for accumulated json, on first chunk, else raise error. Prevent real errors from being masked.
+                self.chunk_type = "accumulated_json"
+                return self.handle_accumulated_json_chunk(chunk=chunk)
+            raise e
+
+        if self.sent_first_chunk is False:
+            self.sent_first_chunk = True
+
+        return self.chunk_parser(chunk=json_chunk)
+
+    def handle_accumulated_json_chunk(self, chunk: str) -> GenericStreamingChunk:
+        message = chunk.replace("data:", "").replace("\n\n", "")
+
+        # Accumulate JSON data
+        self.accumulated_json += message
+
+        # Try to parse the accumulated JSON
+        try:
+            _data = json.loads(self.accumulated_json)
+            self.accumulated_json = ""  # reset after successful parsing
+            return self.chunk_parser(chunk=_data)
+        except json.JSONDecodeError:
+            # If it's not valid JSON yet, continue to the next event
+            return GenericStreamingChunk(
+                text="",
+                is_finished=False,
+                finish_reason="",
+                usage=None,
+                index=0,
+                tool_use=None,
+            )
+
+    def _common_chunk_parsing_logic(self, chunk: str) -> GenericStreamingChunk:
+        chunk = chunk.replace("data:", "")
+        if len(chunk) > 0:
+            """
+            Check if initial chunk valid json
+            - if partial json -> enter accumulated json logic
+            - if valid - continue
+            """
+            if self.chunk_type == "valid_json":
+                return self.handle_valid_json_chunk(chunk=chunk)
+            elif self.chunk_type == "accumulated_json":
+                return self.handle_accumulated_json_chunk(chunk=chunk)
+        else:
+            return GenericStreamingChunk(
+                text="",
+                is_finished=False,
+                finish_reason="",
+                usage=None,
+                index=0,
+                tool_use=None,
+            )
+
     def __next__(self):
         try:
             chunk = self.response_iterator.__next__()
         except StopIteration:
+            if self.chunk_type == "accumulated_json" and self.accumulated_json:
+                return self.handle_accumulated_json_chunk(chunk="")
             raise StopIteration
         except ValueError as e:
             raise RuntimeError(f"Error receiving chunk from stream: {e}")
 
         try:
-            chunk = chunk.replace("data:", "")
-            chunk = chunk.strip()
-            if len(chunk) > 0:
-                json_chunk = json.loads(chunk)
-                return self.chunk_parser(chunk=json_chunk)
-            else:
-                return GenericStreamingChunk(
-                    text="",
-                    is_finished=False,
-                    finish_reason="",
-                    usage=None,
-                    index=0,
-                    tool_use=None,
-                )
+            return self._common_chunk_parsing_logic(chunk=chunk)
         except StopIteration:
             raise StopIteration
         except ValueError as e:
@@ -1840,25 +1665,14 @@ class ModelResponseIterator:
         try:
             chunk = await self.async_response_iterator.__anext__()
         except StopAsyncIteration:
+            if self.chunk_type == "accumulated_json" and self.accumulated_json:
+                return self.handle_accumulated_json_chunk(chunk="")
             raise StopAsyncIteration
         except ValueError as e:
             raise RuntimeError(f"Error receiving chunk from stream: {e}")
 
         try:
-            chunk = chunk.replace("data:", "")
-            chunk = chunk.strip()
-            if len(chunk) > 0:
-                json_chunk = json.loads(chunk)
-                return self.chunk_parser(chunk=json_chunk)
-            else:
-                return GenericStreamingChunk(
-                    text="",
-                    is_finished=False,
-                    finish_reason="",
-                    usage=None,
-                    index=0,
-                    tool_use=None,
-                )
+            return self._common_chunk_parsing_logic(chunk=chunk)
         except StopAsyncIteration:
             raise StopAsyncIteration
         except ValueError as e:

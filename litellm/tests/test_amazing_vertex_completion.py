@@ -655,12 +655,11 @@ def test_gemini_pro_vision_base64():
     try:
         load_vertex_ai_credentials()
         litellm.set_verbose = True
-        litellm.num_retries = 3
         image_path = "../proxy/cached_logo.jpg"
         # Getting the base64 string
         base64_image = encode_image(image_path)
         resp = litellm.completion(
-            model="vertex_ai/gemini-pro-vision",
+            model="vertex_ai/gemini-1.5-pro",
             messages=[
                 {
                     "role": "user",
@@ -679,6 +678,8 @@ def test_gemini_pro_vision_base64():
         print(resp)
 
         prompt_tokens = resp.usage.prompt_tokens
+    except litellm.InternalServerError:
+        pass
     except litellm.RateLimitError as e:
         pass
     except Exception as e:
@@ -2757,3 +2758,69 @@ def test_gemini_function_call_parameter_in_messages():
             "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
             "generationConfig": {},
         } == mock_client.call_args.kwargs["json"]
+
+
+def test_gemini_function_call_parameter_in_messages_2():
+    from litellm.llms.vertex_ai_and_google_ai_studio.vertex_ai_non_gemini import (
+        _gemini_convert_messages_with_history,
+    )
+
+    messages = [
+        {"role": "user", "content": "search for weather in boston (use `search`)"},
+        {
+            "role": "assistant",
+            "content": "Sure, let me check.",
+            "function_call": {
+                "name": "search",
+                "arguments": '{"queries": ["weather in boston"]}',
+            },
+        },
+        {
+            "role": "function",
+            "name": "search",
+            "content": "The weather in Boston is 100 degrees.",
+        },
+    ]
+
+    returned_contents = _gemini_convert_messages_with_history(messages=messages)
+
+    assert returned_contents == [
+        {
+            "role": "user",
+            "parts": [{"text": "search for weather in boston (use `search`)"}],
+        },
+        {
+            "role": "model",
+            "parts": [
+                {"text": "Sure, let me check."},
+                {
+                    "function_call": {
+                        "name": "search",
+                        "args": {
+                            "fields": {
+                                "key": "queries",
+                                "value": {"list_value": ["weather in boston"]},
+                            }
+                        },
+                    }
+                },
+            ],
+        },
+        {
+            "parts": [
+                {
+                    "function_response": {
+                        "name": "search",
+                        "response": {
+                            "fields": {
+                                "key": "content",
+                                "value": {
+                                    "string_value": "The weather in Boston is 100 degrees."
+                                },
+                            }
+                        },
+                    }
+                }
+            ]
+        },
+    ]

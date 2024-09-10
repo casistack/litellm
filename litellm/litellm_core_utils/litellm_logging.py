@@ -25,10 +25,13 @@ from litellm import (
 )
 from litellm.caching import DualCache, InMemoryCache, S3Cache
 from litellm.cost_calculator import _select_model_name_for_cost_calc
+from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.redact_messages import (
+    redact_message_input_output_from_custom_logger,
     redact_message_input_output_from_logging,
 )
+from litellm.rerank_api.types import RerankResponse
 from litellm.types.llms.openai import HttpxBinaryResponseContent
 from litellm.types.router import SPECIAL_MODEL_INFO_PARAMS
 from litellm.types.utils import (
@@ -40,6 +43,7 @@ from litellm.types.utils import (
     StandardLoggingMetadata,
     StandardLoggingModelInformation,
     StandardLoggingPayload,
+    StandardPassThroughResponseObject,
     TextCompletionResponse,
     TranscriptionResponse,
 )
@@ -523,6 +527,7 @@ class Logging:
             TranscriptionResponse,
             TextCompletionResponse,
             HttpxBinaryResponseContent,
+            RerankResponse,
         ],
         cache_hit: Optional[bool] = None,
     ):
@@ -533,7 +538,9 @@ class Logging:
         """
         ## RESPONSE COST ##
         custom_pricing = use_custom_pricing_for_model(
-            litellm_params=self.litellm_params
+            litellm_params=(
+                self.litellm_params if hasattr(self, "litellm_params") else None
+            )
         )
 
         if cache_hit is None:
@@ -584,6 +591,7 @@ class Logging:
                     or isinstance(result, TranscriptionResponse)
                     or isinstance(result, TextCompletionResponse)
                     or isinstance(result, HttpxBinaryResponseContent)  # tts
+                    or isinstance(result, RerankResponse)
                 ):
                     ## RESPONSE COST ##
                     self.model_call_details["response_cost"] = (
@@ -608,17 +616,28 @@ class Logging:
                             self.model_call_details["litellm_params"]["metadata"][
                                 "hidden_params"
                             ] = result._hidden_params
-                ## STANDARDIZED LOGGING PAYLOAD
+                    ## STANDARDIZED LOGGING PAYLOAD
 
-                self.model_call_details["standard_logging_object"] = (
-                    get_standard_logging_object_payload(
-                        kwargs=self.model_call_details,
-                        init_response_obj=result,
-                        start_time=start_time,
-                        end_time=end_time,
-                        logging_obj=self,
+                    self.model_call_details["standard_logging_object"] = (
+                        get_standard_logging_object_payload(
+                            kwargs=self.model_call_details,
+                            init_response_obj=result,
+                            start_time=start_time,
+                            end_time=end_time,
+                            logging_obj=self,
+                        )
                     )
-                )
+                elif isinstance(result, dict):  # pass-through endpoints
+                    ## STANDARDIZED LOGGING PAYLOAD
+                    self.model_call_details["standard_logging_object"] = (
+                        get_standard_logging_object_payload(
+                            kwargs=self.model_call_details,
+                            init_response_obj=result,
+                            start_time=start_time,
+                            end_time=end_time,
+                            logging_obj=self,
+                        )
+                    )
             else:  # streaming chunks + image gen.
                 self.model_call_details["response_cost"] = None
 
@@ -868,6 +887,15 @@ class Logging:
                         model = self.model
                         messages = self.model_call_details["input"]
                         kwargs = self.model_call_details
+
+                        # this only logs streaming once, complete_streaming_response exists i.e when stream ends
+                        if self.stream:
+                            if "complete_streaming_response" not in kwargs:
+                                continue
+                            else:
+                                print_verbose("reaches helicone for streaming logging!")
+                                result = kwargs["complete_streaming_response"]
+
                         heliconeLogger.log_success(
                             model=model,
                             messages=messages,
@@ -1350,7 +1378,27 @@ class Logging:
         ## LOGGING HOOK ##
 
         for callback in callbacks:
-            if isinstance(callback, CustomLogger):
+            if isinstance(callback, CustomGuardrail):
+                from litellm.types.guardrails import GuardrailEventHooks
+
+                if (
+                    callback.should_run_guardrail(
+                        data=self.model_call_details,
+                        event_type=GuardrailEventHooks.logging_only,
+                    )
+                    is not True
+                ):
+                    continue
+
+                self.model_call_details, result = await callback.async_logging_hook(
+                    kwargs=self.model_call_details,
+                    result=result,
+                    call_type=self.call_type,
+                )
+            elif isinstance(callback, CustomLogger):
+                result = redact_message_input_output_from_custom_logger(
+                    result=result, litellm_logging_obj=self, custom_logger=callback
+                )
                 self.model_call_details, result = await callback.async_logging_hook(
                     kwargs=self.model_call_details,
                     result=result,
@@ -1551,6 +1599,32 @@ class Logging:
             )
             metadata.update(exception.headers)
         return start_time, end_time
+
+    async def special_failure_handlers(self, exception: Exception):
+        """
+        Custom events, emitted for specific failures.
+
+        Currently just for router model group rate limit error
+        """
+        from litellm.types.router import RouterErrors
+
+        ## check if special error ##
+        if RouterErrors.no_deployments_available.value not in str(exception):
+            return
+
+        ## get original model group ##
+
+        litellm_params: dict = self.model_call_details.get("litellm_params") or {}
+        metadata = litellm_params.get("metadata") or {}
+
+        model_group = metadata.get("model_group") or None
+        for callback in litellm._async_failure_callback:
+            if isinstance(callback, CustomLogger):  # custom logger class
+                await callback.log_model_group_rate_limit_error(
+                    exception=exception,
+                    original_model_group=model_group,
+                    kwargs=self.model_call_details,
+                )  # type: ignore
 
     def failure_handler(
         self, exception, traceback_exception, start_time=None, end_time=None
@@ -1799,6 +1873,7 @@ class Logging:
         """
         Implementing async callbacks, to handle asyncio event loop issues when custom integrations need to use async functions.
         """
+        await self.special_failure_handlers(exception=exception)
         start_time, end_time = self._failure_handler_helper_fn(
             exception=exception,
             traceback_exception=traceback_exception,
@@ -2217,6 +2292,8 @@ def get_standard_logging_object_payload(
         elif isinstance(init_response_obj, BaseModel):
             response_obj = init_response_obj.model_dump()
             hidden_params = getattr(init_response_obj, "_hidden_params", None)
+        elif isinstance(init_response_obj, dict):
+            response_obj = init_response_obj
         else:
             response_obj = {}
         # standardize this function to be used across, s3, dynamoDB, langfuse logging
@@ -2256,6 +2333,8 @@ def get_standard_logging_object_payload(
             completion_start_time_float = completion_start_time.timestamp()
         elif isinstance(completion_start_time, float):
             completion_start_time_float = completion_start_time
+        else:
+            completion_start_time_float = end_time_float
         # clean up litellm hidden params
         clean_hidden_params = StandardLoggingHiddenParams(
             model_id=None,

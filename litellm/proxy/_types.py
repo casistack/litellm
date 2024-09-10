@@ -242,6 +242,16 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/models",
         # token counter
         "/utils/token_counter",
+        # rerank
+        "/rerank",
+        "/v1/rerank",
+    ]
+
+    mapped_pass_through_routes: List = [
+        "/bedrock",
+        "/vertex-ai",
+        "/gemini",
+        "/langfuse",
     ]
 
     anthropic_routes: List = [
@@ -261,9 +271,7 @@ class LiteLLMRoutes(enum.Enum):
     ]
 
     # NOTE: ROUTES ONLY FOR MASTER KEY - only the Master Key should be able to Reset Spend
-    master_key_only_routes: List = [
-        "/global/spend/reset",
-    ]
+    master_key_only_routes: List = ["/global/spend/reset", "/key/list"]
 
     sso_only_routes: List = [
         "/key/generate",
@@ -337,6 +345,13 @@ class LiteLLMRoutes(enum.Enum):
             "/key/update",
             "/key/delete",
             "/key/info",
+            "/global/spend/tags",
+            "/global/spend/keys",
+            "/global/spend/models",
+            "/global/spend/provider",
+            "/global/spend/end_users",
+            "/global/activity",
+            "/global/activity/model",
         ]
         + spend_tracking_routes
         + sso_only_routes
@@ -642,6 +657,14 @@ class UpdateKeyRequest(GenerateKeyRequest):
     metadata: Optional[dict] = None
 
 
+class RegenerateKeyRequest(GenerateKeyRequest):
+    # This needs to be different from UpdateKeyRequest, because "key" is optional for this
+    key: Optional[str] = None
+    duration: Optional[str] = None
+    spend: Optional[float] = None
+    metadata: Optional[dict] = None
+
+
 class KeyRequest(LiteLLMBase):
     keys: List[str]
 
@@ -858,6 +881,17 @@ class TeamMemberDeleteRequest(LiteLLMBase):
         return values
 
 
+class TeamMemberUpdateRequest(TeamMemberDeleteRequest):
+    max_budget_in_team: float
+
+
+class TeamMemberUpdateResponse(LiteLLMBase):
+    team_id: str
+    user_id: str
+    user_email: Optional[str] = None
+    max_budget_in_team: float
+
+
 class UpdateTeamRequest(LiteLLMBase):
     """
     UpdateTeamRequest, used by /team/update when you need to update a team
@@ -1063,6 +1097,7 @@ class KeyManagementSystem(enum.Enum):
     GOOGLE_KMS = "google_kms"
     AZURE_KEY_VAULT = "azure_key_vault"
     AWS_SECRET_MANAGER = "aws_secret_manager"
+    GOOGLE_SECRET_MANAGER = "google_secret_manager"
     LOCAL = "local"
     AWS_KMS = "aws_kms"
 
@@ -1632,6 +1667,17 @@ class AllCallbacks(LiteLLMBase):
         ui_callback_name="Langsmith",
     )
 
+    lago: CallbackOnUI = CallbackOnUI(
+        litellm_callback_name="lago",
+        litellm_callback_params=[
+            "LAGO_API_BASE",
+            "LAGO_API_KEY",
+            "LAGO_API_EVENT_CODE",
+            "LAGO_API_CHARGE_BY",
+        ],
+        ui_callback_name="Lago Billing",
+    )
+
 
 class SpendLogsMetadata(TypedDict):
     """
@@ -1828,3 +1874,10 @@ class LiteLLM_TeamMembership(LiteLLMBase):
 class TeamAddMemberResponse(LiteLLM_TeamTable):
     updated_users: List[LiteLLM_UserTable]
     updated_team_memberships: List[LiteLLM_TeamMembership]
+
+
+class TeamInfoResponseObject(TypedDict):
+    team_id: str
+    team_info: TeamBase
+    keys: List
+    team_memberships: List[LiteLLM_TeamMembership]

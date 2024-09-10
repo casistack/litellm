@@ -1,5 +1,8 @@
+import json
 import re
+import threading
 from datetime import datetime
+from typing import Union
 
 import httpx
 
@@ -9,6 +12,7 @@ from litellm.llms.vertex_ai_and_google_ai_studio.gemini.vertex_and_google_ai_stu
     VertexLLM,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.types.utils import StandardPassThroughResponseObject
 
 
 class PassThroughEndpointLogging:
@@ -42,11 +46,28 @@ class PassThroughEndpointLogging:
                 **kwargs,
             )
         else:
+            standard_logging_response_object = StandardPassThroughResponseObject(
+                response=httpx_response.text
+            )
+            threading.Thread(
+                target=logging_obj.success_handler,
+                args=(
+                    standard_logging_response_object,
+                    start_time,
+                    end_time,
+                    cache_hit,
+                ),
+            ).start()
             await logging_obj.async_success_handler(
-                result="",
+                result=(
+                    json.dumps(result)
+                    if isinstance(result, dict)
+                    else standard_logging_response_object
+                ),
                 start_time=start_time,
                 end_time=end_time,
                 cache_hit=False,
+                **kwargs,
             )
 
     def is_vertex_route(self, url_route: str):
@@ -102,4 +123,55 @@ class PassThroughEndpointLogging:
                 start_time=start_time,
                 end_time=end_time,
                 cache_hit=cache_hit,
+                **kwargs,
+            )
+        elif "predict" in url_route:
+            from litellm.llms.vertex_ai_and_google_ai_studio.image_generation.image_generation_handler import (
+                VertexImageGeneration,
+            )
+            from litellm.llms.vertex_ai_and_google_ai_studio.vertex_embeddings.embedding_handler import (
+                transform_vertex_response_to_openai,
+            )
+            from litellm.types.utils import PassthroughCallTypes
+
+            vertex_image_generation_class = VertexImageGeneration()
+
+            model = self.extract_model_from_url(url_route)
+            _json_response = httpx_response.json()
+
+            litellm_prediction_response: Union[
+                litellm.ModelResponse, litellm.EmbeddingResponse, litellm.ImageResponse
+            ] = litellm.ModelResponse()
+            if vertex_image_generation_class.is_image_generation_response(
+                _json_response
+            ):
+                litellm_prediction_response = (
+                    vertex_image_generation_class.process_image_generation_response(
+                        _json_response,
+                        model_response=litellm.ImageResponse(),
+                        model=model,
+                    )
+                )
+
+                logging_obj.call_type = (
+                    PassthroughCallTypes.passthrough_image_generation.value
+                )
+            else:
+                litellm_prediction_response = await transform_vertex_response_to_openai(
+                    response=_json_response,
+                    model=model,
+                    model_response=litellm.EmbeddingResponse(),
+                )
+            if isinstance(litellm_prediction_response, litellm.EmbeddingResponse):
+                litellm_prediction_response.model = model
+
+            logging_obj.model = model
+            logging_obj.model_call_details["model"] = logging_obj.model
+
+            await logging_obj.async_success_handler(
+                result=litellm_prediction_response,
+                start_time=start_time,
+                end_time=end_time,
+                cache_hit=cache_hit,
+                **kwargs,
             )

@@ -17,7 +17,7 @@ import time
 import traceback
 from datetime import timedelta
 from enum import Enum
-from typing import Any, BinaryIO, List, Literal, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 from openai._models import BaseModel as OpenAIObject
 
@@ -1777,6 +1777,7 @@ class DualCache(BaseCache):
         redis_cache: Optional[RedisCache] = None,
         default_in_memory_ttl: Optional[float] = None,
         default_redis_ttl: Optional[float] = None,
+        always_read_redis: Optional[bool] = True,
     ) -> None:
         super().__init__()
         # If in_memory_cache is not provided, use the default InMemoryCache
@@ -1788,6 +1789,7 @@ class DualCache(BaseCache):
             default_in_memory_ttl or litellm.default_in_memory_ttl
         )
         self.default_redis_ttl = default_redis_ttl or litellm.default_redis_ttl
+        self.always_read_redis = always_read_redis
 
     def update_cache_ttl(
         self, default_in_memory_ttl: Optional[float], default_redis_ttl: Optional[float]
@@ -1847,8 +1849,12 @@ class DualCache(BaseCache):
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if result is None and self.redis_cache is not None and local_only == False:
-                # If not found in in-memory cache, try fetching from Redis
+            if (
+                (self.always_read_redis is True)
+                and self.redis_cache is not None
+                and local_only == False
+            ):
+                # If not found in in-memory cache or always_read_redis is True, try fetching from Redis
                 redis_result = self.redis_cache.get_cache(key, **kwargs)
 
                 if redis_result is not None:
@@ -1911,8 +1917,12 @@ class DualCache(BaseCache):
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if result is None and self.redis_cache is not None and local_only == False:
-                # If not found in in-memory cache, try fetching from Redis
+            if (
+                (self.always_read_redis is True)
+                and self.redis_cache is not None
+                and local_only == False
+            ):
+                # If not found in in-memory cache or always_read_redis is True, try fetching from Redis
                 redis_result = await self.redis_cache.async_get_cache(key, **kwargs)
 
                 if redis_result is not None:
@@ -2029,10 +2039,7 @@ class DualCache(BaseCache):
 
             return result
         except Exception as e:
-            verbose_logger.exception(
-                f"LiteLLM Cache: Excepton async add_cache: {str(e)}"
-            )
-            raise e
+            raise e  # don't log if exception is raised
 
     async def async_set_cache_sadd(
         self, key, value: List, local_only: bool = False, **kwargs
@@ -2059,10 +2066,7 @@ class DualCache(BaseCache):
 
             return None
         except Exception as e:
-            verbose_logger.exception(
-                "LiteLLM Cache: Excepton async set_cache_sadd: {}".format(str(e))
-            )
-            raise e
+            raise e  # don't log, if exception is raised
 
     def flush_cache(self):
         if self.in_memory_cache is not None:
@@ -2533,7 +2537,6 @@ class Cache:
             self.cache.set_cache(cache_key, cached_data, **kwargs)
         except Exception as e:
             verbose_logger.exception(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
-            pass
 
     async def async_add_cache(self, result, *args, **kwargs):
         """
