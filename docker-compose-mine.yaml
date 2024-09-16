@@ -14,11 +14,11 @@ services:
     environment:
       DATABASE_URL: "postgresql://postgres:${DB_PASSWORD:-example}@db:5432/postgres"
       STORE_MODEL_IN_DB: "${STORE_MODEL_IN_DB:-True}"
-      AZURE_API_KEY: "{AZURE_API_KEY}"
-      OPENAI_API_KEY: "{OPENAI_API_KEY}"
-      REPLICATE_API_KEY: "{REPLICATE_API_KEY}"
-      ANTHROPIC_API_KEY: "{ANTHROPIC_API_KEY}"
-      TOGETHERAI_API_KEY: "{TOGETHERAI_API_KEY}"
+      AZURE_API_KEY: "${AZURE_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      REPLICATE_API_KEY: "${REPLICATE_API_KEY}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      TOGETHERAI_API_KEY: "${TOGETHERAI_API_KEY}"
     #env_file:
       #- .env
     restart: unless-stopped
