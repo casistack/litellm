@@ -75,4 +75,4 @@ ENTRYPOINT ["litellm"]
 
 # Append "--detailed_debug" to the end of CMD to view detailed debug logs 
 #CMD ["--port", "4000"]
-CMD ["--config", "/app/config/config.yaml","--detailed_debug","--port", "4000"]
+CMD ["--config", "/app/config/config.yaml","--detailed_debug","--port", "4000", "--num_workers", "4"]
