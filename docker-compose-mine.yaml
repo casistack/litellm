@@ -19,8 +19,8 @@ services:
       REPLICATE_API_KEY: "{REPLICATE_API_KEY}"
       ANTHROPIC_API_KEY: "{ANTHROPIC_API_KEY}"
       TOGETHERAI_API_KEY: "{TOGETHERAI_API_KEY}"
-    env_file:
-      - .env
+    #env_file:
+      #- .env
     restart: unless-stopped
     depends_on:
       - db
