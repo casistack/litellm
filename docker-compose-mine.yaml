@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile.mine
       args:
         target: runtime
-    image: ghcr.io/berriai/litellm:main-stable
+    image: ghcr.io/berriai/litellm:${DOCKER_TAG:-main-latest}
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:
