@@ -97,9 +97,9 @@ class PassThroughEndpointLogging:
         if "generateContent" in url_route:
             model = self.extract_model_from_url(url_route)
 
-            instance_of_vertex_llm = VertexLLM()
+            instance_of_vertex_llm = litellm.VertexGeminiConfig()
             litellm_model_response: litellm.ModelResponse = (
-                instance_of_vertex_llm._process_response(
+                instance_of_vertex_llm._transform_response(
                     model=model,
                     messages=[
                         {"role": "user", "content": "no-message-pass-through-endpoint"}
@@ -115,7 +115,7 @@ class PassThroughEndpointLogging:
                     encoding=None,
                 )
             )
-            logging_obj.model = litellm_model_response.model
+            logging_obj.model = litellm_model_response.model or model
             logging_obj.model_call_details["model"] = logging_obj.model
 
             await logging_obj.async_success_handler(
@@ -128,9 +128,6 @@ class PassThroughEndpointLogging:
         elif "predict" in url_route:
             from litellm.llms.vertex_ai_and_google_ai_studio.image_generation.image_generation_handler import (
                 VertexImageGeneration,
-            )
-            from litellm.llms.vertex_ai_and_google_ai_studio.vertex_embeddings.embedding_handler import (
-                transform_vertex_response_to_openai,
             )
             from litellm.types.utils import PassthroughCallTypes
 
@@ -157,7 +154,7 @@ class PassThroughEndpointLogging:
                     PassthroughCallTypes.passthrough_image_generation.value
                 )
             else:
-                litellm_prediction_response = await transform_vertex_response_to_openai(
+                litellm_prediction_response = litellm.vertexAITextEmbeddingConfig.transform_vertex_response_to_openai(
                     response=_json_response,
                     model=model,
                     model_response=litellm.EmbeddingResponse(),

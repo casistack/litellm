@@ -1,17 +1,31 @@
 import copy
-from typing import TYPE_CHECKING, Any, Dict, Optional
+import time
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from fastapi import Request
+from starlette.datastructures import Headers
 
 import litellm
 from litellm._logging import verbose_logger, verbose_proxy_logger
+from litellm._service_logger import ServiceLogging
 from litellm.proxy._types import (
     AddTeamCallback,
     CommonProxyErrors,
+    LitellmDataForBackendLLMCall,
+    LiteLLMRoutes,
+    SpecialHeaders,
     TeamCallbackMetadata,
     UserAPIKeyAuth,
 )
-from litellm.types.utils import SupportedCacheControls
+from litellm.proxy.auth.auth_utils import get_request_route
+from litellm.types.services import ServiceTypes
+from litellm.types.utils import (
+    StandardLoggingUserAPIKeyMetadata,
+    SupportedCacheControls,
+)
+
+service_logger_obj = ServiceLogging()  # used for tracking latency on OTEL
+
 
 if TYPE_CHECKING:
     from litellm.proxy.proxy_server import ProxyConfig as _ProxyConfig
@@ -96,7 +110,7 @@ def convert_key_logging_metadata_to_callback(
     for var, value in data.callback_vars.items():
         if team_callback_settings_obj.callback_vars is None:
             team_callback_settings_obj.callback_vars = {}
-        team_callback_settings_obj.callback_vars[var] = (
+        team_callback_settings_obj.callback_vars[var] = str(
             litellm.utils.get_secret(value, default_value=value) or value
         )
 
@@ -137,7 +151,131 @@ def _get_dynamic_logging_metadata(
     return callback_settings_obj
 
 
-async def add_litellm_data_to_request(
+def clean_headers(
+    headers: Headers, litellm_key_header_name: Optional[str] = None
+) -> dict:
+    """
+    Removes litellm api key from headers
+    """
+    special_headers = [v.value.lower() for v in SpecialHeaders._member_map_.values()]
+    special_headers = special_headers
+    if litellm_key_header_name is not None:
+        special_headers.append(litellm_key_header_name.lower())
+    clean_headers = {}
+    for header, value in headers.items():
+        if header.lower() not in special_headers:
+            clean_headers[header] = value
+    return clean_headers
+
+
+class LiteLLMProxyRequestSetup:
+    @staticmethod
+    def _get_forwardable_headers(
+        headers: Union[Headers, dict],
+    ):
+        """
+        Get the headers that should be forwarded to the LLM Provider.
+
+        Looks for any `x-` headers and sends them to the LLM Provider.
+        """
+        forwarded_headers = {}
+        for header, value in headers.items():
+            if header.lower().startswith("x-") and not header.lower().startswith(
+                "x-stainless"
+            ):  # causes openai sdk to fail
+                forwarded_headers[header] = value
+
+        return forwarded_headers
+
+    @staticmethod
+    def get_openai_org_id_from_headers(
+        headers: dict, general_settings: Optional[Dict] = None
+    ) -> Optional[str]:
+        """
+        Get the OpenAI Org ID from the headers.
+        """
+        if (
+            general_settings is not None
+            and general_settings.get("forward_openai_org_id") is not True
+        ):
+            return None
+        for header, value in headers.items():
+            if header.lower() == "openai-organization":
+                return value
+        return None
+
+    @staticmethod
+    def add_headers_to_llm_call(
+        headers: dict, user_api_key_dict: UserAPIKeyAuth
+    ) -> dict:
+        """
+        Add headers to the LLM call
+
+        - Checks request headers for forwardable headers
+        - Checks if user information should be added to the headers
+        """
+        from litellm.litellm_core_utils.litellm_logging import (
+            get_standard_logging_metadata,
+        )
+
+        returned_headers = LiteLLMProxyRequestSetup._get_forwardable_headers(headers)
+
+        if litellm.add_user_information_to_llm_headers is True:
+            litellm_logging_metadata_headers = (
+                LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(
+                    user_api_key_dict=user_api_key_dict
+                )
+            )
+            for k, v in litellm_logging_metadata_headers.items():
+                if v is not None:
+                    returned_headers["x-litellm-{}".format(k)] = v
+
+        return returned_headers
+
+    @staticmethod
+    def add_litellm_data_for_backend_llm_call(
+        *,
+        headers: dict,
+        user_api_key_dict: UserAPIKeyAuth,
+        general_settings: Optional[Dict[str, Any]] = None,
+    ) -> LitellmDataForBackendLLMCall:
+        """
+        - Adds forwardable headers
+        - Adds org id
+        """
+        data = LitellmDataForBackendLLMCall()
+        if (
+            general_settings
+            and general_settings.get("forward_client_headers_to_llm_api") is True
+        ):
+            _headers = LiteLLMProxyRequestSetup.add_headers_to_llm_call(
+                headers, user_api_key_dict
+            )
+            if _headers != {}:
+                data["headers"] = _headers
+        _organization = LiteLLMProxyRequestSetup.get_openai_org_id_from_headers(
+            headers, general_settings
+        )
+        if _organization is not None:
+            data["organization"] = _organization
+        return data
+
+    @staticmethod
+    def get_sanitized_user_information_from_key(
+        user_api_key_dict: UserAPIKeyAuth,
+    ) -> StandardLoggingUserAPIKeyMetadata:
+        user_api_key_logged_metadata = StandardLoggingUserAPIKeyMetadata(
+            user_api_key_hash=user_api_key_dict.api_key,  # just the hashed token
+            user_api_key_alias=user_api_key_dict.key_alias,
+            user_api_key_team_id=user_api_key_dict.team_id,
+            user_api_key_user_id=user_api_key_dict.user_id,
+            user_api_key_org_id=user_api_key_dict.org_id,
+            user_api_key_team_alias=user_api_key_dict.team_alias,
+        )
+        return user_api_key_logged_metadata
+
+
+async def add_litellm_data_to_request(  # noqa: PLR0915
     data: dict,
     request: Request,
     user_api_key_dict: UserAPIKeyAuth,
@@ -163,7 +301,22 @@ async def add_litellm_data_to_request(
 
     safe_add_api_version_from_query_params(data, request)
 
-    _headers = dict(request.headers)
+    _headers = clean_headers(
+        request.headers,
+        litellm_key_header_name=(
+            general_settings.get("litellm_key_header_name")
+            if general_settings is not None
+            else None
+        ),
+    )
+
+    data.update(
+        LiteLLMProxyRequestSetup.add_litellm_data_for_backend_llm_call(
+            headers=_headers,
+            user_api_key_dict=user_api_key_dict,
+            general_settings=general_settings,
+        )
+    )
 
     # Include original request and headers in the data
     data["proxy_server_request"] = {
@@ -204,28 +357,35 @@ async def add_litellm_data_to_request(
 
     if _metadata_variable_name not in data:
         data[_metadata_variable_name] = {}
-    data[_metadata_variable_name]["user_api_key"] = user_api_key_dict.api_key
-    data[_metadata_variable_name]["user_api_key_alias"] = getattr(
-        user_api_key_dict, "key_alias", None
+
+    # We want to log the "metadata" from the client side request. Avoid circular reference by not directly assigning metadata to itself
+    if "metadata" in data and data["metadata"] is not None:
+        data[_metadata_variable_name]["requester_metadata"] = copy.deepcopy(
+            data["metadata"]
+        )
+
+    user_api_key_logged_metadata = (
+        LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(
+            user_api_key_dict=user_api_key_dict
+        )
     )
+    data[_metadata_variable_name].update(user_api_key_logged_metadata)
+    data[_metadata_variable_name][
+        "user_api_key"
+    ] = (
+        user_api_key_dict.api_key
+    )  # this is just the hashed token. [TODO]: replace variable name in repo.
+
     data[_metadata_variable_name]["user_api_end_user_max_budget"] = getattr(
         user_api_key_dict, "end_user_max_budget", None
     )
+
     data[_metadata_variable_name]["litellm_api_version"] = version
 
     if general_settings is not None:
         data[_metadata_variable_name]["global_max_parallel_requests"] = (
             general_settings.get("global_max_parallel_requests", None)
         )
-
-    data[_metadata_variable_name]["user_api_key_user_id"] = user_api_key_dict.user_id
-    data[_metadata_variable_name]["user_api_key_org_id"] = user_api_key_dict.org_id
-    data[_metadata_variable_name]["user_api_key_team_id"] = getattr(
-        user_api_key_dict, "team_id", None
-    )
-    data[_metadata_variable_name]["user_api_key_team_alias"] = getattr(
-        user_api_key_dict, "team_alias", None
-    )
 
     ### KEY-LEVEL Controls
     key_metadata = user_api_key_dict.metadata
@@ -317,7 +477,7 @@ async def add_litellm_data_to_request(
     ### END-USER SPECIFIC PARAMS ###
     if user_api_key_dict.allowed_model_region is not None:
         data["allowed_model_region"] = user_api_key_dict.allowed_model_region
-
+    start_time = time.time()
     ## [Enterprise Only]
     # Add User-IP Address
     requester_ip_address = ""
@@ -344,15 +504,8 @@ async def add_litellm_data_to_request(
 
     # Enterprise Only - Check if using tag based routing
     if llm_router and llm_router.enable_tag_filtering is True:
-        if premium_user is not True:
-            verbose_proxy_logger.warning(
-                "router.enable_tag_filtering is on %s \n switched off router.enable_tag_filtering",
-                CommonProxyErrors.not_premium_user.value,
-            )
-            llm_router.enable_tag_filtering = False
-        else:
-            if "tags" in data:
-                data[_metadata_variable_name]["tags"] = data["tags"]
+        if "tags" in data:
+            data[_metadata_variable_name]["tags"] = data["tags"]
 
     ### TEAM-SPECIFIC PARAMS ###
     if user_api_key_dict.team_id is not None:
@@ -389,6 +542,19 @@ async def add_litellm_data_to_request(
         user_api_key_dict=user_api_key_dict,
     )
 
+    verbose_proxy_logger.debug(
+        f"[PROXY]returned data from litellm_pre_call_utils: {data}"
+    )
+
+    end_time = time.time()
+    await service_logger_obj.async_service_success_hook(
+        service=ServiceTypes.PROXY_PRE_CALL,
+        duration=end_time - start_time,
+        call_type="add_litellm_data_to_request",
+        start_time=start_time,
+        end_time=end_time,
+        parent_otel_span=user_api_key_dict.parent_otel_span,
+    )
     return data
 
 

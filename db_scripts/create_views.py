@@ -6,13 +6,17 @@ import asyncio
 import os
 
 # Enter your DATABASE_URL here
-os.environ["DATABASE_URL"] = "postgresql://xxxxxxx"
+
 from prisma import Prisma
 
-db = Prisma()
+db = Prisma(
+    http={
+        "timeout": 60000,
+    },
+)
 
 
-async def check_view_exists():
+async def check_view_exists():  # noqa: PLR0915
     """
     Checks if the LiteLLM_VerificationTokenView and MonthlyGlobalSpend exists in the user's db.
 

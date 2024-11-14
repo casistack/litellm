@@ -61,7 +61,7 @@ litellm_settings:
 
 Removes any field with `user_api_key_*` from metadata.
 
-## What gets logged?
+## What gets logged? StandardLoggingPayload
 
 Found under `kwargs["standard_logging_object"]`. This is a standard payload, logged for every response.
 
@@ -85,9 +85,10 @@ class StandardLoggingPayload(TypedDict):
     cache_hit: Optional[bool]
     cache_key: Optional[str]
     saved_cache_cost: Optional[float]
-    request_tags: list
+    request_tags: list                         
     end_user: Optional[str]
-    requester_ip_address: Optional[str]
+    requester_ip_address: Optional[str]         # IP address of requester
+    requester_metadata: Optional[dict]          # metadata passed in request in the "metadata" field
     messages: Optional[Union[str, list, dict]]
     response: Optional[Union[str, list, dict]]
     model_parameters: dict
@@ -106,7 +107,7 @@ class StandardLoggingModelInformation(TypedDict):
     model_map_value: Optional[ModelInfo]
 ```
 
-## Logging Proxy Input/Output - Langfuse
+## Langfuse
 
 We will use the `--config` to set `litellm.success_callback = ["langfuse"]` this will log all successfull LLM calls to langfuse. Make sure to set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` in your environment
 
@@ -462,7 +463,7 @@ You will see `raw_request` in your Langfuse Metadata. This is the RAW CURL comma
 
 <Image img={require('../../img/debug_langfuse.png')} />
 
-## Logging Proxy Input/Output in OpenTelemetry format
+## OpenTelemetry format
 
 :::info 
 
@@ -600,6 +601,52 @@ curl --location 'http://0.0.0.0:4000/chat/completions' \
 
 </TabItem>
 
+<TabItem value="traceloop" label="Log to Traceloop Cloud">
+
+#### Quick Start - Log to Traceloop
+
+**Step 1:**
+Add the following to your env
+
+```shell
+OTEL_EXPORTER="otlp_http"
+OTEL_ENDPOINT="https://api.traceloop.com"
+OTEL_HEADERS="Authorization=Bearer%20<your-api-key>"
+```
+
+**Step 2:** Add `otel` as a callbacks
+
+```shell
+litellm_settings:
+  callbacks: ["otel"]
+```
+
+**Step 3**: Start the proxy, make a test request
+
+Start proxy
+
+```shell
+litellm --config config.yaml --detailed_debug
+```
+
+Test Request
+
+```shell
+curl --location 'http://0.0.0.0:4000/chat/completions' \
+    --header 'Content-Type: application/json' \
+    --data ' {
+    "model": "gpt-3.5-turbo",
+    "messages": [
+        {
+        "role": "user",
+        "content": "what llm are you"
+        }
+    ]
+    }'
+```
+
+</TabItem>
+
 <TabItem value="otel-col" label="Log to OTEL HTTP Collector">
 
 #### Quick Start - Log to OTEL Collector
@@ -669,52 +716,6 @@ litellm_settings:
 ```
 
 **Step 2**: Start the proxy, make a test request
-
-Start proxy
-
-```shell
-litellm --config config.yaml --detailed_debug
-```
-
-Test Request
-
-```shell
-curl --location 'http://0.0.0.0:4000/chat/completions' \
-    --header 'Content-Type: application/json' \
-    --data ' {
-    "model": "gpt-3.5-turbo",
-    "messages": [
-        {
-        "role": "user",
-        "content": "what llm are you"
-        }
-    ]
-    }'
-```
-
-</TabItem>
-
-<TabItem value="traceloop" label="Log to Traceloop Cloud">
-
-#### Quick Start - Log to Traceloop
-
-**Step 1:** Install the `traceloop-sdk` SDK
-
-```shell
-pip install traceloop-sdk==0.21.2
-```
-
-**Step 2:** Add `traceloop` as a success_callback
-
-```shell
-litellm_settings:
-  success_callback: ["traceloop"]
-
-environment_variables:
-  TRACELOOP_API_KEY: "XXXXX"
-```
-
-**Step 3**: Start the proxy, make a test request
 
 Start proxy
 
@@ -1215,7 +1216,7 @@ litellm_settings:
 
 Start the LiteLLM Proxy and make a test request to verify the logs reached your callback API 
 
-## Logging LLM IO to Langsmith
+## Langsmith
 
 1. Set `success_callback: ["langsmith"]` on litellm config.yaml
 
@@ -1260,7 +1261,7 @@ Expect to see your log on Langfuse
 <Image img={require('../../img/langsmith_new.png')} />
 
 
-## Logging LLM IO to Arize AI
+## Arize AI
 
 1. Set `success_callback: ["arize"]` on litellm config.yaml
 
@@ -1278,6 +1279,8 @@ litellm_settings:
 environment_variables:
     ARIZE_SPACE_KEY: "d0*****"
     ARIZE_API_KEY: "141a****"
+    ARIZE_ENDPOINT: "https://otlp.arize.com/v1" # OPTIONAL - your custom arize GRPC api endpoint
+    ARIZE_HTTP_ENDPOINT: "https://otlp.arize.com/v1" # OPTIONAL - your custom arize HTTP api endpoint. Set either this or ARIZE_ENDPOINT
 ```
 
 2. Start Proxy
@@ -1305,7 +1308,50 @@ curl --location 'http://0.0.0.0:4000/chat/completions' \
 Expect to see your log on Langfuse
 <Image img={require('../../img/langsmith_new.png')} />
 
-## Logging LLM IO to Galileo
+
+## Langtrace
+
+1. Set `success_callback: ["langtrace"]` on litellm config.yaml
+
+```yaml
+model_list:
+  - model_name: gpt-4
+    litellm_params:
+      model: openai/fake
+      api_key: fake-key
+      api_base: https://exampleopenaiendpoint-production.up.railway.app/
+
+litellm_settings:
+  callbacks: ["langtrace"]
+
+environment_variables:
+    LANGTRACE_API_KEY: "141a****"
+```
+
+2. Start Proxy
+
+```
+litellm --config /path/to/config.yaml
+```
+
+3. Test it! 
+
+```bash
+curl --location 'http://0.0.0.0:4000/chat/completions' \
+--header 'Content-Type: application/json' \
+--data ' {
+      "model": "fake-openai-endpoint",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello, Claude gm!"
+        }
+      ],
+    }
+'
+```
+
+## Galileo
 
 [BETA]
 
@@ -1420,7 +1466,14 @@ curl --location 'http://0.0.0.0:4000/chat/completions' \
 
 <Image img={require('../../img/openmeter_img_2.png')} />
 
-## Logging Proxy Input/Output - DataDog
+## DataDog
+
+LiteLLM Supports logging to the following Datdog Integrations:
+- `datadog` [Datadog Logs](https://docs.datadoghq.com/logs/)
+- `datadog_llm_observability` [Datadog LLM Observability](https://www.datadoghq.com/product/llm-observability/)
+
+<Tabs>
+<TabItem value="datadog" label="Datadog Logs">
 
 We will use the `--config` to set `litellm.success_callback = ["datadog"]` this will log all successfull LLM calls to DataDog
 
@@ -1432,8 +1485,24 @@ model_list:
     litellm_params:
       model: gpt-3.5-turbo
 litellm_settings:
-  success_callback: ["datadog"]
+  success_callback: ["datadog"] # logs llm success logs on datadog
+  service_callback: ["datadog"] # logs redis, postgres failures on datadog
 ```
+
+</TabItem>
+<TabItem value="datadog_llm_observability" label="Datadog LLM Observability">
+
+```yaml
+model_list:
+ - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: gpt-3.5-turbo
+litellm_settings:
+  callbacks: ["datadog_llm_observability"] # logs llm success logs on datadog
+```
+
+</TabItem>
+</Tabs>
 
 **Step 2**: Set Required env variables for datadog
 
@@ -1474,7 +1543,7 @@ Expected output on Datadog
 
 <Image img={require('../../img/dd_small1.png')} />
 
-## Logging Proxy Input/Output - DynamoDB
+## DynamoDB
 
 We will use the `--config` to set 
 
@@ -1600,7 +1669,7 @@ Your logs should be available on DynamoDB
 }
 ```
 
-## Logging Proxy Input/Output - Sentry
+## Sentry
 
 If api calls fail (llm/database) you can log those to Sentry: 
 
@@ -1642,7 +1711,7 @@ Test Request
 litellm --test
 ```
 
-## Logging Proxy Input/Output Athina
+## Athina
 
 [Athina](https://athina.ai/) allows you to log LLM Input/Output for monitoring, analytics, and observability.
 
