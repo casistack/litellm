@@ -3,7 +3,7 @@ services:
   litellm:
     build:
       context: .
-      dockerfile: Dockerfile.mine
+      dockerfile: Dockerfile.mine.2
       args:
         target: runtime
     image: ghcr.io/berriai/litellm:${DOCKER_TAG:-main-latest}
