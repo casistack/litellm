@@ -527,6 +527,7 @@ def function_setup(  # noqa: PLR0915
             messages=messages,
             stream=stream,
             litellm_call_id=kwargs["litellm_call_id"],
+            litellm_trace_id=kwargs.get("litellm_trace_id"),
             function_id=function_id or "",
             call_type=call_type,
             start_time=start_time,
@@ -2056,6 +2057,7 @@ def get_litellm_params(
     azure_ad_token_provider=None,
     user_continue_message=None,
     base_model=None,
+    litellm_trace_id=None,
 ):
     litellm_params = {
         "acompletion": acompletion,
@@ -2084,6 +2086,7 @@ def get_litellm_params(
         "user_continue_message": user_continue_message,
         "base_model": base_model
         or _get_base_model_from_litellm_call_metadata(metadata=metadata),
+        "litellm_trace_id": litellm_trace_id,
     }
 
     return litellm_params
@@ -2900,24 +2903,16 @@ def get_optional_params(  # noqa: PLR0915
         )
         _check_valid_arg(supported_params=supported_params)
 
-        if stream:
-            optional_params["stream"] = stream
-        if temperature is not None:
-            optional_params["temperature"] = temperature
-        if top_p is not None:
-            optional_params["top_p"] = top_p
-        if max_tokens is not None:
-            optional_params["max_tokens"] = max_tokens
-        if frequency_penalty is not None:
-            optional_params["frequency_penalty"] = frequency_penalty
-        if stop is not None:
-            optional_params["stop"] = stop
-        if tools is not None:
-            optional_params["tools"] = tools
-        if tool_choice is not None:
-            optional_params["tool_choice"] = tool_choice
-        if response_format is not None:
-            optional_params["response_format"] = response_format
+        optional_params = litellm.TogetherAIConfig().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+            drop_params=(
+                drop_params
+                if drop_params is not None and isinstance(drop_params, bool)
+                else False
+            ),
+        )
     elif custom_llm_provider == "ai21":
         ## check if unsupported param passed in
         supported_params = get_supported_openai_params(

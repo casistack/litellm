@@ -245,10 +245,7 @@ from litellm.router import (
 from litellm.router import ModelInfo as RouterModelInfo
 from litellm.router import updateDeployment
 from litellm.scheduler import DefaultPriorities, FlowItem, Scheduler
-from litellm.secret_managers.aws_secret_manager import (
-    load_aws_kms,
-    load_aws_secret_manager,
-)
+from litellm.secret_managers.aws_secret_manager import load_aws_kms
 from litellm.secret_managers.google_kms import load_google_kms
 from litellm.secret_managers.main import (
     get_secret,
@@ -1072,7 +1069,7 @@ async def update_cache(  # noqa: PLR0915
     end_user_id: Optional[str],
     team_id: Optional[str],
     response_cost: Optional[float],
-    parent_otel_span: Optional[Span],
+    parent_otel_span: Optional[Span],  # type: ignore
 ):
     """
     Use this to update the cache with new user spend.
@@ -1825,8 +1822,13 @@ class ProxyConfig:
                     key_management_system
                     == KeyManagementSystem.AWS_SECRET_MANAGER.value  # noqa: F405
                 ):
-                    ### LOAD FROM AWS SECRET MANAGER ###
-                    load_aws_secret_manager(use_aws_secret_manager=True)
+                    from litellm.secret_managers.aws_secret_manager_v2 import (
+                        AWSSecretsManagerV2,
+                    )
+
+                    AWSSecretsManagerV2.load_aws_secret_manager(
+                        use_aws_secret_manager=True
+                    )
                 elif key_management_system == KeyManagementSystem.AWS_KMS.value:
                     load_aws_kms(use_aws_kms=True)
                 elif (
@@ -5655,6 +5657,13 @@ async def anthropic_response(  # noqa: PLR0915
     request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
+    """
+    This is a BETA endpoint that calls 100+ LLMs in the anthropic format.
+
+    To do a simple pass-through for anthropic, do `{PROXY_BASE_URL}/anthropic/v1/messages`
+
+    Docs - https://docs.litellm.ai/docs/anthropic_completion
+    """
     from litellm import adapter_completion
     from litellm.adapters.anthropic_adapter import anthropic_adapter
 
