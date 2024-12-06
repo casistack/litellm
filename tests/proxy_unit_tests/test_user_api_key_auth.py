@@ -14,7 +14,7 @@ import pytest
 from starlette.datastructures import URL
 
 import litellm
-from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.auth.user_api_key_auth import user_api_key_auth, UserAPIKeyAuth
 
 
 class Request:
@@ -305,14 +305,14 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
     [
         # Proxy Admin checks
         ("/global/spend/logs", "proxy_admin", True),
-        ("/key/delete", "proxy_admin", True),
-        ("/key/generate", "proxy_admin", True),
-        ("/key/regenerate", "proxy_admin", True),
+        ("/key/delete", "proxy_admin", False),
+        ("/key/generate", "proxy_admin", False),
+        ("/key/regenerate", "proxy_admin", False),
         # Internal User checks - allowed routes
         ("/global/spend/logs", "internal_user", True),
-        ("/key/delete", "internal_user", True),
-        ("/key/generate", "internal_user", True),
-        ("/key/82akk800000000jjsk/regenerate", "internal_user", True),
+        ("/key/delete", "internal_user", False),
+        ("/key/generate", "internal_user", False),
+        ("/key/82akk800000000jjsk/regenerate", "internal_user", False),
         # Internal User Viewer
         ("/key/generate", "internal_user_viewer", False),
         # Internal User checks - disallowed routes
@@ -320,7 +320,7 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
     ],
 )
 def test_is_ui_route_allowed(route, user_role, expected_result):
-    from litellm.proxy.auth.user_api_key_auth import _is_ui_route_allowed
+    from litellm.proxy.auth.user_api_key_auth import _is_ui_route
     from litellm.proxy._types import LiteLLM_UserTable
 
     user_obj = LiteLLM_UserTable(
@@ -342,7 +342,7 @@ def test_is_ui_route_allowed(route, user_role, expected_result):
         "user_obj": user_obj,
     }
     try:
-        assert _is_ui_route_allowed(**received_args) == expected_result
+        assert _is_ui_route(**received_args) == expected_result
     except Exception as e:
         # If expected result is False, we expect an error
         if expected_result is False:
@@ -387,3 +387,34 @@ def test_is_api_route_allowed(route, user_role, expected_result):
             pass
         else:
             raise e
+
+
+@pytest.mark.asyncio
+async def test_auth_not_connected_to_db():
+    """
+    ensure requests don't fail when `prisma_client` = None
+    """
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+    from litellm.proxy.proxy_server import hash_token, user_api_key_cache
+
+    user_key = "sk-12345678"
+
+    setattr(litellm.proxy.proxy_server, "user_api_key_cache", user_api_key_cache)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    setattr(litellm.proxy.proxy_server, "prisma_client", None)
+    setattr(
+        litellm.proxy.proxy_server,
+        "general_settings",
+        {"allow_requests_on_db_unavailable": True},
+    )
+
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+
+    valid_token = await user_api_key_auth(request=request, api_key="Bearer " + user_key)
+    print("got valid token", valid_token)
+    assert valid_token.key_name == "failed-to-connect-to-db"
+    assert valid_token.token == "failed-to-connect-to-db"

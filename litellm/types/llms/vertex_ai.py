@@ -13,23 +13,14 @@ from typing_extensions import (
 )
 
 
-class Field(TypedDict):
-    key: str
-    value: Dict[str, Any]
-
-
-class FunctionCallArgs(TypedDict):
-    fields: Field
-
-
 class FunctionResponse(TypedDict):
     name: str
-    response: FunctionCallArgs
+    response: Optional[dict]
 
 
 class FunctionCall(TypedDict):
     name: str
-    args: FunctionCallArgs
+    args: Optional[dict]
 
 
 class FileDataType(TypedDict):
@@ -443,3 +434,43 @@ class VertexAIBatchEmbeddingsRequestBody(TypedDict, total=False):
 
 class VertexAIBatchEmbeddingsResponseObject(TypedDict):
     embeddings: List[ContentEmbeddings]
+
+
+# Vertex AI Batch Prediction
+
+
+class GcsSource(TypedDict):
+    uris: str
+
+
+class InputConfig(TypedDict):
+    instancesFormat: str
+    gcsSource: GcsSource
+
+
+class GcsDestination(TypedDict):
+    outputUriPrefix: str
+
+
+class OutputConfig(TypedDict, total=False):
+    predictionsFormat: str
+    gcsDestination: GcsDestination
+
+
+class VertexAIBatchPredictionJob(TypedDict):
+    displayName: str
+    model: str
+    inputConfig: InputConfig
+    outputConfig: OutputConfig
+
+
+class VertexBatchPredictionResponse(TypedDict, total=False):
+    name: str
+    displayName: str
+    model: str
+    inputConfig: InputConfig
+    outputConfig: OutputConfig
+    state: str
+    createTime: str
+    updateTime: str
+    modelVersionId: str

@@ -106,6 +106,9 @@ class ModelInfo(TypedDict, total=False):
     supports_prompt_caching: Optional[bool]
     supports_audio_input: Optional[bool]
     supports_audio_output: Optional[bool]
+    supports_pdf_input: Optional[bool]
+    tpm: Optional[int]
+    rpm: Optional[int]
 
 
 class GenericStreamingChunk(TypedDict, total=False):
@@ -1602,3 +1605,22 @@ class StandardCallbackDynamicParams(TypedDict, total=False):
     langsmith_api_key: Optional[str]
     langsmith_project: Optional[str]
     langsmith_base_url: Optional[str]
+
+
+class KeyGenerationConfig(TypedDict, total=False):
+    required_params: List[
+        str
+    ]  # specify params that must be present in the key generation request
+
+
+class TeamUIKeyGenerationConfig(KeyGenerationConfig):
+    allowed_team_member_roles: List[str]
+
+
+class PersonalUIKeyGenerationConfig(KeyGenerationConfig):
+    allowed_user_roles: List[str]
+
+
+class StandardKeyGenerationConfig(TypedDict, total=False):
+    team_key_generation: TeamUIKeyGenerationConfig
+    personal_key_generation: PersonalUIKeyGenerationConfig

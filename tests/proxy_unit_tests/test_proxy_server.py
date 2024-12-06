@@ -1014,7 +1014,11 @@ async def test_create_team_member_add(prisma_client, new_member_method):
     with patch(
         "litellm.proxy.proxy_server.prisma_client.db.litellm_usertable",
         new_callable=AsyncMock,
-    ) as mock_litellm_usertable:
+    ) as mock_litellm_usertable, patch(
+        "litellm.proxy.auth.auth_checks._get_team_object_from_user_api_key_cache",
+        new=AsyncMock(return_value=team_obj),
+    ) as mock_team_obj:
+
         mock_client = AsyncMock(
             return_value=LiteLLM_UserTable(
                 user_id="1234", max_budget=100, user_email="1234"
@@ -1193,7 +1197,10 @@ async def test_create_team_member_add_team_admin(
     with patch(
         "litellm.proxy.proxy_server.prisma_client.db.litellm_usertable",
         new_callable=AsyncMock,
-    ) as mock_litellm_usertable:
+    ) as mock_litellm_usertable, patch(
+        "litellm.proxy.auth.auth_checks._get_team_object_from_user_api_key_cache",
+        new=AsyncMock(return_value=team_obj),
+    ) as mock_team_obj:
         mock_client = AsyncMock(
             return_value=LiteLLM_UserTable(
                 user_id="1234", max_budget=100, user_email="1234"
@@ -1794,7 +1801,7 @@ async def test_add_callback_via_key_litellm_pre_call_utils_langsmith(
 async def test_gemini_pass_through_endpoint():
     from starlette.datastructures import URL
 
-    from litellm.proxy.vertex_ai_endpoints.google_ai_studio_endpoints import (
+    from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
         Request,
         Response,
         gemini_proxy_route,

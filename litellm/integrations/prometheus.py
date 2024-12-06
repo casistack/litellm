@@ -18,6 +18,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.types.integrations.prometheus import *
 from litellm.types.utils import StandardLoggingPayload
+from litellm.utils import get_end_user_id_for_cost_tracking
 
 
 class PrometheusLogger(CustomLogger):
@@ -228,6 +229,13 @@ class PrometheusLogger(CustomLogger):
                     "api_key_alias",
                 ],
             )
+            # llm api provider budget metrics
+            self.litellm_provider_remaining_budget_metric = Gauge(
+                "litellm_provider_remaining_budget_metric",
+                "Remaining budget for provider - used when you set provider budget limits",
+                labelnames=["api_provider"],
+            )
+
             # Get all keys
             _logged_llm_labels = [
                 "litellm_model_name",
@@ -357,8 +365,9 @@ class PrometheusLogger(CustomLogger):
         model = kwargs.get("model", "")
         litellm_params = kwargs.get("litellm_params", {}) or {}
         _metadata = litellm_params.get("metadata", {})
-        proxy_server_request = litellm_params.get("proxy_server_request") or {}
-        end_user_id = proxy_server_request.get("body", {}).get("user", None)
+        end_user_id = get_end_user_id_for_cost_tracking(
+            litellm_params, service_type="prometheus"
+        )
         user_id = standard_logging_payload["metadata"]["user_api_key_user_id"]
         user_api_key = standard_logging_payload["metadata"]["user_api_key_hash"]
         user_api_key_alias = standard_logging_payload["metadata"]["user_api_key_alias"]
@@ -657,13 +666,13 @@ class PrometheusLogger(CustomLogger):
 
         # unpack kwargs
         model = kwargs.get("model", "")
-        litellm_params = kwargs.get("litellm_params", {}) or {}
         standard_logging_payload: StandardLoggingPayload = kwargs.get(
             "standard_logging_object", {}
         )
-        proxy_server_request = litellm_params.get("proxy_server_request") or {}
-
-        end_user_id = proxy_server_request.get("body", {}).get("user", None)
+        litellm_params = kwargs.get("litellm_params", {}) or {}
+        end_user_id = get_end_user_id_for_cost_tracking(
+            litellm_params, service_type="prometheus"
+        )
         user_id = standard_logging_payload["metadata"]["user_api_key_user_id"]
         user_api_key = standard_logging_payload["metadata"]["user_api_key_hash"]
         user_api_key_alias = standard_logging_payload["metadata"]["user_api_key_alias"]
@@ -1129,6 +1138,19 @@ class PrometheusLogger(CustomLogger):
         self.litellm_deployment_cooled_down.labels(
             litellm_model_name, model_id, api_base, api_provider, exception_status
         ).inc()
+
+    def track_provider_remaining_budget(
+        self, provider: str, spend: float, budget_limit: float
+    ):
+        """
+        Track provider remaining budget in Prometheus
+        """
+        self.litellm_provider_remaining_budget_metric.labels(provider).set(
+            self._safe_get_remaining_budget(
+                max_budget=budget_limit,
+                spend=spend,
+            )
+        )
 
     def _safe_get_remaining_budget(
         self, max_budget: Optional[float], spend: Optional[float]

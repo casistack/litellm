@@ -115,7 +115,8 @@ from .llms.cohere import chat as cohere_chat
 from .llms.cohere import completion as cohere_completion  # type: ignore
 from .llms.cohere.embed import handler as cohere_embed
 from .llms.custom_llm import CustomLLM, custom_chat_llm_router
-from .llms.databricks.chat import DatabricksChatCompletion
+from .llms.databricks.chat.handler import DatabricksChatCompletion
+from .llms.databricks.embed.handler import DatabricksEmbeddingHandler
 from .llms.groq.chat.handler import GroqChatCompletion
 from .llms.huggingface_restapi import Huggingface
 from .llms.OpenAI.audio_transcriptions import OpenAIAudioTranscription
@@ -157,6 +158,9 @@ from .llms.vertex_ai_and_google_ai_studio.vertex_ai_partner_models.main import (
 )
 from .llms.vertex_ai_and_google_ai_studio.vertex_embeddings.embedding_handler import (
     VertexEmbedding,
+)
+from .llms.vertex_ai_and_google_ai_studio.vertex_model_garden.main import (
+    VertexAIModelGardenModels,
 )
 from .llms.watsonx.chat.handler import WatsonXChatHandler
 from .llms.watsonx.completion.handler import IBMWatsonXAI
@@ -221,11 +225,13 @@ vertex_multimodal_embedding = VertexMultimodalEmbedding()
 vertex_image_generation = VertexImageGeneration()
 google_batch_embeddings = GoogleBatchEmbeddings()
 vertex_partner_models_chat_completion = VertexAIPartnerModels()
+vertex_model_garden_chat_completion = VertexAIModelGardenModels()
 vertex_text_to_speech = VertexTextToSpeechAPI()
 watsonxai = IBMWatsonXAI()
 sagemaker_llm = SagemakerLLM()
 watsonx_chat_completion = WatsonXChatHandler()
 openai_like_embedding = OpenAILikeEmbeddingHandler()
+databricks_embedding = DatabricksEmbeddingHandler()
 ####### COMPLETION ENDPOINTS ################
 
 
@@ -550,7 +556,6 @@ def mock_completion(
 
     Raises:
         Exception: If an error occurs during the generation of the mock completion response.
-
     Note:
         - This function is intended for testing or debugging purposes to generate mock completion responses.
         - If 'stream' is True, it returns a response that mimics the behavior of a streaming completion.
@@ -1492,8 +1497,8 @@ def completion(  # type: ignore # noqa: PLR0915
                 timeout=timeout,  # type: ignore
                 custom_prompt_dict=custom_prompt_dict,
                 client=client,  # pass AsyncOpenAI, OpenAI client
-                organization=organization,
                 custom_llm_provider=custom_llm_provider,
+                encoding=encoding,
             )
         elif (
             model in litellm.open_ai_chat_completion_models
@@ -1679,7 +1684,6 @@ def completion(  # type: ignore # noqa: PLR0915
                 or get_secret("CLARIFAI_API_BASE")
                 or "https://api.clarifai.com/v2"
             )
-
             custom_prompt_dict = custom_prompt_dict or litellm.custom_prompt_dict
             model_response = clarifai.completion(
                 model=model,
@@ -1967,15 +1971,16 @@ def completion(  # type: ignore # noqa: PLR0915
                 logging_obj=logging,  # model call logging done inside the class as we make need to modify I/O to fit aleph alpha's requirements
             )
 
-            if "stream" in optional_params and optional_params["stream"] is True:
-                # don't try to access stream object,
-                response = CustomStreamWrapper(
-                    model_response,
-                    model,
-                    custom_llm_provider="cohere_chat",
-                    logging_obj=logging,
-                )
-                return response
+            # if "stream" in optional_params and optional_params["stream"] is True:
+            #     # don't try to access stream object,
+            #     response = CustomStreamWrapper(
+            #         model_response,
+            #         model,
+            #         custom_llm_provider="cohere_chat",
+            #         logging_obj=logging,
+            #         _response_headers=headers,
+            #     )
+            #     return response
             response = model_response
         elif custom_llm_provider == "maritalk":
             maritalk_key = (
@@ -2355,6 +2360,28 @@ def completion(  # type: ignore # noqa: PLR0915
                     api_base=api_base,
                     extra_headers=extra_headers,
                 )
+            elif "openai" in model:
+                # Vertex Model Garden - OpenAI compatible models
+                model_response = vertex_model_garden_chat_completion.completion(
+                    model=model,
+                    messages=messages,
+                    model_response=model_response,
+                    print_verbose=print_verbose,
+                    optional_params=new_params,
+                    litellm_params=litellm_params,  # type: ignore
+                    logger_fn=logger_fn,
+                    encoding=encoding,
+                    api_base=api_base,
+                    vertex_location=vertex_ai_location,
+                    vertex_project=vertex_ai_project,
+                    vertex_credentials=vertex_credentials,
+                    logging_obj=logging,
+                    acompletion=acompletion,
+                    headers=headers,
+                    custom_prompt_dict=custom_prompt_dict,
+                    timeout=timeout,
+                    client=client,
+                )
             else:
                 model_response = vertex_ai_non_gemini.completion(
                     model=model,
@@ -2575,7 +2602,10 @@ def completion(  # type: ignore # noqa: PLR0915
 
             base_model = litellm.AmazonConverseConfig()._get_base_model(model)
 
-            if base_model in litellm.BEDROCK_CONVERSE_MODELS:
+            if base_model in litellm.bedrock_converse_models or model.startswith(
+                "converse/"
+            ):
+                model = model.replace("converse/", "")
                 response = bedrock_converse_chat_completion.completion(
                     model=model,
                     messages=messages,
@@ -2594,6 +2624,7 @@ def completion(  # type: ignore # noqa: PLR0915
                     api_base=api_base,
                 )
             else:
+                model = model.replace("invoke/", "")
                 response = bedrock_chat_completion.completion(
                     model=model,
                     messages=messages,
@@ -3157,6 +3188,7 @@ async def aembedding(*args, **kwargs) -> EmbeddingResponse:
             or custom_llm_provider == "azure_ai"
             or custom_llm_provider == "together_ai"
             or custom_llm_provider == "openai_like"
+            or custom_llm_provider == "jina_ai"
         ):  # currently implemented aiohttp calls for just azure and openai, soon all.
             # Await normally
             init_response = await loop.run_in_executor(None, func_with_context)
@@ -3414,6 +3446,10 @@ def embedding(  # noqa: PLR0915
                 or litellm.openai_key
                 or get_secret_str("OPENAI_API_KEY")
             )
+
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
+
             api_type = "openai"
             api_version = None
 
@@ -3444,7 +3480,7 @@ def embedding(  # noqa: PLR0915
             )  # type: ignore
 
             ## EMBEDDING CALL
-            response = databricks_chat_completions.embedding(
+            response = databricks_embedding.embedding(
                 model=model,
                 input=input,
                 api_base=api_base,
@@ -4703,6 +4739,7 @@ def transcription(
     response_format: Optional[
         Literal["json", "text", "srt", "verbose_json", "vtt"]
     ] = None,
+    timestamp_granularities: Optional[List[Literal["word", "segment"]]] = None,
     temperature: Optional[int] = None,  # openai defaults this to 0
     ## LITELLM PARAMS ##
     user: Optional[str] = None,
@@ -4752,6 +4789,7 @@ def transcription(
         language=language,
         prompt=prompt,
         response_format=response_format,
+        timestamp_granularities=timestamp_granularities,
         temperature=temperature,
         custom_llm_provider=custom_llm_provider,
         drop_params=drop_params,

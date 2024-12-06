@@ -33,6 +33,7 @@ from litellm.types.llms.openai import (
     ChatCompletionAssistantToolCall,
     ChatCompletionFunctionMessage,
     ChatCompletionImageObject,
+    ChatCompletionImageUrlObject,
     ChatCompletionTextObject,
     ChatCompletionToolCallFunctionChunk,
     ChatCompletionToolMessage,
@@ -681,6 +682,27 @@ def construct_tool_use_system_prompt(
     return tool_use_system_prompt
 
 
+def convert_generic_image_chunk_to_openai_image_obj(
+    image_chunk: GenericImageParsingChunk,
+) -> str:
+    """
+    Convert a generic image chunk to an OpenAI image object.
+
+    Input:
+    GenericImageParsingChunk(
+        type="base64",
+        media_type="image/jpeg",
+        data="...",
+    )
+
+    Return:
+    "data:image/jpeg;base64,{base64_image}"
+    """
+    return "data:{};{},{}".format(
+        image_chunk["media_type"], image_chunk["type"], image_chunk["data"]
+    )
+
+
 def convert_to_anthropic_image_obj(openai_image_url: str) -> GenericImageParsingChunk:
     """
     Input:
@@ -706,6 +728,7 @@ def convert_to_anthropic_image_obj(openai_image_url: str) -> GenericImageParsing
             data=base64_data,
         )
     except Exception as e:
+        traceback.print_exc()
         if "Error: Unable to fetch image from URL" in str(e):
             raise e
         raise Exception(
@@ -943,17 +966,10 @@ def _gemini_tool_call_invoke_helper(
     name = function_call_params.get("name", "") or ""
     arguments = function_call_params.get("arguments", "")
     arguments_dict = json.loads(arguments)
-    function_call: Optional[litellm.types.llms.vertex_ai.FunctionCall] = None
-    for k, v in arguments_dict.items():
-        inferred_protocol_value = infer_protocol_value(value=v)
-        _field = litellm.types.llms.vertex_ai.Field(
-            key=k, value={inferred_protocol_value: v}
-        )
-        _fields = litellm.types.llms.vertex_ai.FunctionCallArgs(fields=_field)
-        function_call = litellm.types.llms.vertex_ai.FunctionCall(
-            name=name,
-            args=_fields,
-        )
+    function_call = litellm.types.llms.vertex_ai.FunctionCall(
+        name=name,
+        args=arguments_dict,
+    )
     return function_call
 
 
@@ -978,54 +994,26 @@ def convert_to_gemini_tool_call_invoke(
     },
     """
     """
-    Gemini tool call invokes: - https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling#submit-api-output
-    content {
-        role: "model"
-        parts [
+    Gemini tool call invokes:
+    {
+      "role": "model",
+      "parts": [
         {
-            function_call {
-            name: "get_current_weather"
-            args {
-                fields {
-                    key: "unit"
-                    value {
-                    string_value: "fahrenheit"
-                    }
-                }
-                fields {
-                    key: "predicted_temperature"
-                    value {
-                    number_value: 45
-                    }
-                }
-                fields {
-                    key: "location"
-                    value {
-                    string_value: "Boston, MA"
-                    }
-                }
+          "functionCall": {
+            "name": "get_current_weather",
+            "args": {
+              "unit": "fahrenheit",
+              "predicted_temperature": 45,
+              "location": "Boston, MA",
             }
-        },
-        {
-            function_call {
-            name: "get_current_weather"
-            args {
-                fields {
-                key: "location"
-                value {
-                    string_value: "San Francisco"
-                }
-                }
-            }
-            }
+          }
         }
-        ]
+      ]
     }
     """
 
     """
-    - json.load the arguments 
-    - iterate through arguments -> create a FunctionCallArgs for each field
+    - json.load the arguments
     """
     try:
         _parts_list: List[litellm.types.llms.vertex_ai.PartType] = []
@@ -1128,16 +1116,8 @@ def convert_to_gemini_tool_call_result(
 
     # We can't determine from openai message format whether it's a successful or
     # error call result so default to the successful result template
-    inferred_content_value = infer_protocol_value(value=content_str)
-
-    _field = litellm.types.llms.vertex_ai.Field(
-        key="content", value={inferred_content_value: content_str}
-    )
-
-    _function_call_args = litellm.types.llms.vertex_ai.FunctionCallArgs(fields=_field)
-
     _function_response = litellm.types.llms.vertex_ai.FunctionResponse(
-        name=name, response=_function_call_args  # type: ignore
+        name=name, response={"content": content_str}  # type: ignore
     )
 
     _part = litellm.types.llms.vertex_ai.PartType(function_response=_function_response)
@@ -1179,15 +1159,44 @@ def convert_to_anthropic_tool_result(
         ]
     }
     """
-    content_str: str = ""
+    anthropic_content: Union[
+        str,
+        List[Union[AnthropicMessagesToolResultContent, AnthropicMessagesImageParam]],
+    ] = ""
     if isinstance(message["content"], str):
-        content_str = message["content"]
+        anthropic_content = message["content"]
     elif isinstance(message["content"], List):
         content_list = message["content"]
+        anthropic_content_list: List[
+            Union[AnthropicMessagesToolResultContent, AnthropicMessagesImageParam]
+        ] = []
         for content in content_list:
             if content["type"] == "text":
-                content_str += content["text"]
+                anthropic_content_list.append(
+                    AnthropicMessagesToolResultContent(
+                        type="text",
+                        text=content["text"],
+                    )
+                )
+            elif content["type"] == "image_url":
+                if isinstance(content["image_url"], str):
+                    image_chunk = convert_to_anthropic_image_obj(content["image_url"])
+                else:
+                    image_chunk = convert_to_anthropic_image_obj(
+                        content["image_url"]["url"]
+                    )
+                anthropic_content_list.append(
+                    AnthropicMessagesImageParam(
+                        type="image",
+                        source=AnthropicContentParamSource(
+                            type="base64",
+                            media_type=image_chunk["media_type"],
+                            data=image_chunk["data"],
+                        ),
+                    )
+                )
 
+        anthropic_content = anthropic_content_list
     anthropic_tool_result: Optional[AnthropicMessagesToolResultParam] = None
     ## PROMPT CACHING CHECK ##
     cache_control = message.get("cache_control", None)
@@ -1198,14 +1207,14 @@ def convert_to_anthropic_tool_result(
         # We can't determine from openai message format whether it's a successful or
         # error call result so default to the successful result template
         anthropic_tool_result = AnthropicMessagesToolResultParam(
-            type="tool_result", tool_use_id=tool_call_id, content=content_str
+            type="tool_result", tool_use_id=tool_call_id, content=anthropic_content
         )
 
     if message["role"] == "function":
         function_message: ChatCompletionFunctionMessage = message
         tool_call_id = function_message.get("tool_call_id") or str(uuid.uuid4())
         anthropic_tool_result = AnthropicMessagesToolResultParam(
-            type="tool_result", tool_use_id=tool_call_id, content=content_str
+            type="tool_result", tool_use_id=tool_call_id, content=anthropic_content
         )
 
     if anthropic_tool_result is None:
@@ -2153,8 +2162,9 @@ def stringify_json_tool_call_content(messages: List) -> List:
 ###### AMAZON BEDROCK #######
 
 from litellm.types.llms.bedrock import ContentBlock as BedrockContentBlock
+from litellm.types.llms.bedrock import DocumentBlock as BedrockDocumentBlock
 from litellm.types.llms.bedrock import ImageBlock as BedrockImageBlock
-from litellm.types.llms.bedrock import ImageSourceBlock as BedrockImageSourceBlock
+from litellm.types.llms.bedrock import SourceBlock as BedrockSourceBlock
 from litellm.types.llms.bedrock import ToolBlock as BedrockToolBlock
 from litellm.types.llms.bedrock import (
     ToolChoiceValuesBlock as BedrockToolChoiceValuesBlock,
@@ -2201,7 +2211,9 @@ def get_image_details(image_url) -> Tuple[str, str]:
         raise e
 
 
-def _process_bedrock_converse_image_block(image_url: str) -> BedrockImageBlock:
+def _process_bedrock_converse_image_block(
+    image_url: str,
+) -> BedrockContentBlock:
     if "base64" in image_url:
         # Case 1: Images with base64 encoding
         import base64
@@ -2219,12 +2231,17 @@ def _process_bedrock_converse_image_block(image_url: str) -> BedrockImageBlock:
         else:
             mime_type = "image/jpeg"
             image_format = "jpeg"
-        _blob = BedrockImageSourceBlock(bytes=img_without_base_64)
+        _blob = BedrockSourceBlock(bytes=img_without_base_64)
         supported_image_formats = (
             litellm.AmazonConverseConfig().get_supported_image_types()
         )
+        supported_document_types = (
+            litellm.AmazonConverseConfig().get_supported_document_types()
+        )
         if image_format in supported_image_formats:
-            return BedrockImageBlock(source=_blob, format=image_format)  # type: ignore
+            return BedrockContentBlock(image=BedrockImageBlock(source=_blob, format=image_format))  # type: ignore
+        elif image_format in supported_document_types:
+            return BedrockContentBlock(document=BedrockDocumentBlock(source=_blob, format=image_format, name="DocumentPDFmessages_{}".format(str(uuid.uuid4()))))  # type: ignore
         else:
             # Handle the case when the image format is not supported
             raise ValueError(
@@ -2235,12 +2252,17 @@ def _process_bedrock_converse_image_block(image_url: str) -> BedrockImageBlock:
     elif "https:/" in image_url:
         # Case 2: Images with direct links
         image_bytes, image_format = get_image_details(image_url)
-        _blob = BedrockImageSourceBlock(bytes=image_bytes)
+        _blob = BedrockSourceBlock(bytes=image_bytes)
         supported_image_formats = (
             litellm.AmazonConverseConfig().get_supported_image_types()
         )
+        supported_document_types = (
+            litellm.AmazonConverseConfig().get_supported_document_types()
+        )
         if image_format in supported_image_formats:
-            return BedrockImageBlock(source=_blob, format=image_format)  # type: ignore
+            return BedrockContentBlock(image=BedrockImageBlock(source=_blob, format=image_format))  # type: ignore
+        elif image_format in supported_document_types:
+            return BedrockContentBlock(document=BedrockDocumentBlock(source=_blob, format=image_format, name="DocumentPDFmessages_{}".format(str(uuid.uuid4()))))  # type: ignore
         else:
             # Handle the case when the image format is not supported
             raise ValueError(
@@ -2455,15 +2477,32 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
                             _part = BedrockContentBlock(text=element["text"])
                             _parts.append(_part)
                         elif element["type"] == "image_url":
-                            image_url = element["image_url"]["url"]
+                            if isinstance(element["image_url"], dict):
+                                image_url = element["image_url"]["url"]
+                            else:
+                                image_url = element["image_url"]
                             _part = _process_bedrock_converse_image_block(  # type: ignore
                                 image_url=image_url
                             )
-                            _parts.append(BedrockContentBlock(image=_part))  # type: ignore
+                            _parts.append(_part)  # type: ignore
+                        _cache_point_block = (
+                            litellm.AmazonConverseConfig()._get_cache_point_block(
+                                element, block_type="content_block"
+                            )
+                        )
+                        if _cache_point_block is not None:
+                            _parts.append(_cache_point_block)
                 user_content.extend(_parts)
             else:
                 _part = BedrockContentBlock(text=messages[msg_i]["content"])
+                _cache_point_block = (
+                    litellm.AmazonConverseConfig()._get_cache_point_block(
+                        messages[msg_i], block_type="content_block"
+                    )
+                )
                 user_content.append(_part)
+                if _cache_point_block is not None:
+                    user_content.append(_cache_point_block)
 
             msg_i += 1
         if user_content:
@@ -2530,13 +2569,14 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
                             assistants_part = BedrockContentBlock(text=element["text"])
                             assistants_parts.append(assistants_part)
                         elif element["type"] == "image_url":
-                            image_url = element["image_url"]["url"]
+                            if isinstance(element["image_url"], dict):
+                                image_url = element["image_url"]["url"]
+                            else:
+                                image_url = element["image_url"]
                             assistants_part = _process_bedrock_converse_image_block(  # type: ignore
                                 image_url=image_url
                             )
-                            assistants_parts.append(
-                                BedrockContentBlock(image=assistants_part)  # type: ignore
-                            )
+                            assistants_parts.append(assistants_part)
                 assistant_content.extend(assistants_parts)
             elif messages[msg_i].get("content", None) is not None and isinstance(
                 messages[msg_i]["content"], str

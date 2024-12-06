@@ -28,6 +28,8 @@ from fastapi import (
     Request,
     Response,
     UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +51,7 @@ from litellm._service_logger import ServiceLogging
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import (
     _cache_key_object,
+    _handle_failed_db_connection_for_get_key_object,
     allowed_routes_check,
     can_key_call_model,
     common_checks,
@@ -95,6 +98,11 @@ anthropic_api_key_header = APIKeyHeader(
     auto_error=False,
     description="If anthropic client used.",
 )
+google_ai_studio_api_key_header = APIKeyHeader(
+    name=SpecialHeaders.google_ai_studio_authorization.value,
+    auto_error=False,
+    description="If google ai studio client used.",
+)
 
 
 def _get_bearer_token(
@@ -111,12 +119,12 @@ def _get_bearer_token(
     return api_key
 
 
-def _is_ui_route_allowed(
+def _is_ui_route(
     route: str,
     user_obj: Optional[LiteLLM_UserTable] = None,
 ) -> bool:
     """
-    - Route b/w ui token check and normal token check
+    - Check if the route is a UI used route
     """
     # this token is only used for managing the ui
     allowed_routes = LiteLLMRoutes.ui_routes.value
@@ -133,15 +141,7 @@ def _is_ui_route_allowed(
         for allowed_route in allowed_routes
     ):
         return True
-    else:
-        if user_obj is not None and _is_user_proxy_admin(user_obj=user_obj):
-            return True
-        elif _has_user_setup_sso() and route in LiteLLMRoutes.sso_only_routes.value:
-            return True
-        else:
-            raise Exception(
-                f"This key is made for LiteLLM UI, Tried to access route: {route}. Not allowed"
-            )
+    return False
 
 
 def _is_api_route_allowed(
@@ -185,8 +185,8 @@ def _is_allowed_route(
     """
     - Route b/w ui token check and normal token check
     """
-    if token_type == "ui":
-        return _is_ui_route_allowed(route=route, user_obj=user_obj)
+    if token_type == "ui" and _is_ui_route(route=route, user_obj=user_obj):
+        return True
     else:
         return _is_api_route_allowed(
             route=route,
@@ -198,6 +198,52 @@ def _is_allowed_route(
         )
 
 
+async def user_api_key_auth_websocket(websocket: WebSocket):
+    # Accept the WebSocket connection
+
+    request = Request(scope={"type": "http"})
+    request._url = websocket.url
+
+    query_params = websocket.query_params
+
+    model = query_params.get("model")
+
+    async def return_body():
+        return_string = f'{{"model": "{model}"}}'
+        # return string as bytes
+        return return_string.encode()
+
+    request.body = return_body  # type: ignore
+
+    # Extract the Authorization header
+    authorization = websocket.headers.get("authorization")
+
+    # If no Authorization header, try the api-key header
+    if not authorization:
+        api_key = websocket.headers.get("api-key")
+        if not api_key:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            raise HTTPException(status_code=403, detail="No API key provided")
+    else:
+        # Extract the API key from the Bearer token
+        if not authorization.startswith("Bearer "):
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            raise HTTPException(
+                status_code=403, detail="Invalid Authorization header format"
+            )
+
+        api_key = authorization[len("Bearer ") :].strip()
+
+    # Call user_api_key_auth with the extracted API key
+    # Note: You'll need to modify this to work with WebSocket context if needed
+    try:
+        return await user_api_key_auth(request=request, api_key=f"Bearer {api_key}")
+    except Exception as e:
+        verbose_proxy_logger.exception(e)
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        raise HTTPException(status_code=403, detail=str(e))
+
+
 async def user_api_key_auth(  # noqa: PLR0915
     request: Request,
     api_key: str = fastapi.Security(api_key_header),
@@ -205,12 +251,16 @@ async def user_api_key_auth(  # noqa: PLR0915
     anthropic_api_key_header: Optional[str] = fastapi.Security(
         anthropic_api_key_header
     ),
+    google_ai_studio_api_key_header: Optional[str] = fastapi.Security(
+        google_ai_studio_api_key_header
+    ),
 ) -> UserAPIKeyAuth:
     from litellm.proxy.proxy_server import (
         general_settings,
         jwt_handler,
         litellm_proxy_admin_name,
         llm_model_list,
+        llm_router,
         master_key,
         open_telemetry_logger,
         prisma_client,
@@ -221,8 +271,8 @@ async def user_api_key_auth(  # noqa: PLR0915
 
     parent_otel_span: Optional[Span] = None
     start_time = datetime.now()
+    route: str = get_request_route(request=request)
     try:
-        route: str = get_request_route(request=request)
         # get the request body
         request_data = await _read_request_body(request=request)
         await pre_db_read_auth_checks(
@@ -241,6 +291,8 @@ async def user_api_key_auth(  # noqa: PLR0915
             api_key = azure_api_key_header
         elif isinstance(anthropic_api_key_header, str):
             api_key = anthropic_api_key_header
+        elif isinstance(google_ai_studio_api_key_header, str):
+            api_key = google_ai_studio_api_key_header
         elif pass_through_endpoints is not None:
             for endpoint in pass_through_endpoints:
                 if endpoint.get("path", "") == route:
@@ -492,6 +544,7 @@ async def user_api_key_auth(  # noqa: PLR0915
                     general_settings=general_settings,
                     global_proxy_spend=global_proxy_spend,
                     route=route,
+                    llm_router=llm_router,
                 )
 
                 # return UserAPIKeyAuth object
@@ -750,7 +803,9 @@ async def user_api_key_auth(  # noqa: PLR0915
         if (
             prisma_client is None
         ):  # if both master key + user key submitted, and user key != master key, and no db connected, raise an error
-            raise Exception("No connected db.")
+            return await _handle_failed_db_connection_for_get_key_object(
+                e=Exception("No connected db.")
+            )
 
         ## check for cache hit (In-Memory Cache)
         _user_role = None
@@ -855,6 +910,7 @@ async def user_api_key_auth(  # noqa: PLR0915
                         model=model,
                         llm_model_list=llm_model_list,
                         valid_token=valid_token,
+                        llm_router=llm_router,
                     )
 
                 if fallback_models is not None:
@@ -863,6 +919,7 @@ async def user_api_key_auth(  # noqa: PLR0915
                             model=m,
                             llm_model_list=llm_model_list,
                             valid_token=valid_token,
+                            llm_router=llm_router,
                         )
 
             # Check 2. If user_id for this token is in budget - done in common_checks()
@@ -1123,6 +1180,7 @@ async def user_api_key_auth(  # noqa: PLR0915
                 general_settings=general_settings,
                 global_proxy_spend=global_proxy_spend,
                 route=route,
+                llm_router=llm_router,
             )
             # Token passed all checks
             if valid_token is None:
@@ -1195,13 +1253,21 @@ async def user_api_key_auth(  # noqa: PLR0915
             extra={"requester_ip": requester_ip},
         )
 
-        # Log this exception to OTEL
-        if open_telemetry_logger is not None:
-            await open_telemetry_logger.async_post_call_failure_hook(  # type: ignore
+        # Log this exception to OTEL, Datadog etc
+        user_api_key_dict = UserAPIKeyAuth(
+            parent_otel_span=parent_otel_span,
+            api_key=api_key,
+        )
+        request_data = await _read_request_body(request=request)
+        asyncio.create_task(
+            proxy_logging_obj.post_call_failure_hook(
+                request_data=request_data,
                 original_exception=e,
-                request_data={},
-                user_api_key_dict=UserAPIKeyAuth(parent_otel_span=parent_otel_span),
+                user_api_key_dict=user_api_key_dict,
+                error_type=ProxyErrorTypes.auth_error,
+                route=route,
             )
+        )
 
         if isinstance(e, litellm.BudgetExceededError):
             raise ProxyException(

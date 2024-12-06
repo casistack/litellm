@@ -572,6 +572,96 @@ Here's how to use Vertex AI with the LiteLLM Proxy Server
 
   </Tabs>
 
+
+## Authentication - vertex_project, vertex_location, etc. 
+
+Set your vertex credentials via:
+- dynamic params
+OR
+- env vars 
+
+
+### **Dynamic Params**
+
+You can set:
+- `vertex_credentials` (str) - can be a json string or filepath to your vertex ai service account.json
+- `vertex_location` (str) - place where vertex model is deployed (us-central1, asia-southeast1, etc.)
+- `vertex_project` Optional[str] - use if vertex project different from the one in vertex_credentials
+
+as dynamic params for a `litellm.completion` call. 
+
+<Tabs>
+<TabItem value="sdk" label="SDK">
+
+```python
+from litellm import completion
+import json 
+
+## GET CREDENTIALS 
+file_path = 'path/to/vertex_ai_service_account.json'
+
+# Load the JSON file
+with open(file_path, 'r') as file:
+    vertex_credentials = json.load(file)
+
+# Convert to JSON string
+vertex_credentials_json = json.dumps(vertex_credentials)
+
+
+response = completion(
+  model="vertex_ai/gemini-pro",
+  messages=[{"content": "You are a good bot.","role": "system"}, {"content": "Hello, how are you?","role": "user"}], 
+  vertex_credentials=vertex_credentials_json,
+  vertex_project="my-special-project", 
+  vertex_location="my-special-location"
+)
+```
+
+</TabItem>
+<TabItem value="proxy" label="PROXY">
+
+```yaml
+model_list:
+    - model_name: gemini-1.5-pro
+      litellm_params:
+        model: gemini-1.5-pro
+        vertex_credentials: os.environ/VERTEX_FILE_PATH_ENV_VAR # os.environ["VERTEX_FILE_PATH_ENV_VAR"] = "/path/to/service_account.json" 
+        vertex_project: "my-special-project"
+        vertex_location: "my-special-location:
+```
+
+</TabItem>
+</Tabs>
+
+
+
+
+### **Environment Variables**
+
+You can set:
+- `GOOGLE_APPLICATION_CREDENTIALS` - store the filepath for your service_account.json in here (used by vertex sdk directly).
+- VERTEXAI_LOCATION - place where vertex model is deployed (us-central1, asia-southeast1, etc.)
+- VERTEXAI_PROJECT - Optional[str] - use if vertex project different from the one in vertex_credentials
+
+1. GOOGLE_APPLICATION_CREDENTIALS
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service_account.json"
+```
+
+2. VERTEXAI_LOCATION
+
+```bash
+export VERTEXAI_LOCATION="us-central1" # can be any vertex location
+```
+
+3. VERTEXAI_PROJECT
+
+```bash
+export VERTEXAI_PROJECT="my-test-project" # ONLY use if model project is different from service account project
+```
+
+
 ## Specifying Safety Settings 
 In certain use-cases you may need to make calls to the models and pass [safety settigns](https://ai.google.dev/docs/safety_setting_gemini) different from the defaults. To do so, simple pass the `safety_settings` argument to `completion` or `acompletion`. For example:
 
@@ -1161,11 +1251,95 @@ curl --location 'http://0.0.0.0:4000/chat/completions' \
 
 
 ## Model Garden
-| Model Name       | Function Call                        |
-|------------------|--------------------------------------|
-| llama2   | `completion('vertex_ai/<endpoint_id>', messages)` |
+
+:::tip
+
+All OpenAI compatible models from Vertex Model Garden are supported. 
+
+:::
 
 #### Using Model Garden
+
+**Almost all Vertex Model Garden models are OpenAI compatible.**
+
+<Tabs>
+
+<TabItem value="openai" label="OpenAI Compatible Models">
+
+| Property | Details |
+|----------|---------|
+| Provider Route | `vertex_ai/openai/{MODEL_ID}` |
+| Vertex Documentation | [Vertex Model Garden - OpenAI Chat Completions](https://github.com/GoogleCloudPlatform/vertex-ai-samples/blob/main/notebooks/community/model_garden/model_garden_gradio_streaming_chat_completions.ipynb), [Vertex Model Garden](https://cloud.google.com/model-garden?hl=en) |
+| Supported Operations | `/chat/completions`, `/embeddings` |
+
+<Tabs>
+<TabItem value="sdk" label="SDK">
+
+```python
+from litellm import completion
+import os
+
+## set ENV variables
+os.environ["VERTEXAI_PROJECT"] = "hardy-device-38811"
+os.environ["VERTEXAI_LOCATION"] = "us-central1"
+
+response = completion(
+  model="vertex_ai/openai/<your-endpoint-id>", 
+  messages=[{ "content": "Hello, how are you?","role": "user"}]
+)
+```
+
+</TabItem>
+
+<TabItem value="proxy" label="Proxy">
+
+
+**1. Add to config**
+
+```yaml
+model_list:
+    - model_name: llama3-1-8b-instruct
+      litellm_params:
+        model: vertex_ai/openai/5464397967697903616
+        vertex_ai_project: "my-test-project"
+        vertex_ai_location: "us-east-1"
+```
+
+**2. Start proxy**
+
+```bash
+litellm --config /path/to/config.yaml
+
+# RUNNING at http://0.0.0.0:4000
+```
+
+**3. Test it!**
+
+```bash
+curl --location 'http://0.0.0.0:4000/chat/completions' \
+      --header 'Authorization: Bearer sk-1234' \
+      --header 'Content-Type: application/json' \
+      --data '{
+            "model": "llama3-1-8b-instruct", # 👈 the 'model_name' in config
+            "messages": [
+                {
+                "role": "user",
+                "content": "what llm are you"
+                }
+            ],
+        }'
+```
+
+
+
+
+</TabItem>
+
+</Tabs>
+
+</TabItem>
+
+<TabItem value="non-openai" label="Non-OpenAI Compatible Models">
 
 ```python
 from litellm import completion
@@ -1180,6 +1354,11 @@ response = completion(
   messages=[{ "content": "Hello, how are you?","role": "user"}]
 )
 ```
+
+</TabItem>
+
+</Tabs>
+
 
 ## Gemini Pro
 | Model Name       | Function Call                        |
@@ -2214,94 +2393,111 @@ print("response from proxy", response)
 </TabItem>
 </Tabs>
 
+## **Batch APIs**
+
+Just add the following Vertex env vars to your environment. 
+
+```bash
+# GCS Bucket settings, used to store batch prediction files in
+export GCS_BUCKET_NAME = "litellm-testing-bucket" # the bucket you want to store batch prediction files in
+export GCS_PATH_SERVICE_ACCOUNT="/path/to/service_account.json" # path to your service account json file
+
+# Vertex /batch endpoint settings, used for LLM API requests
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service_account.json" # path to your service account json file
+export VERTEXAI_LOCATION="us-central1" # can be any vertex location
+export VERTEXAI_PROJECT="my-test-project" 
+```
+
+### Usage
 
 
-## Authentication - vertex_project, vertex_location, etc. 
+#### 1. Create a file of batch requests for vertex
 
-Set your vertex credentials via:
-- dynamic params
-OR
-- env vars 
+LiteLLM expects the file to follow the **[OpenAI batches files format](https://platform.openai.com/docs/guides/batch)**
+
+Each `body` in the file should be an **OpenAI API request**
+
+Create a file called `vertex_batch_completions.jsonl` in the current working directory, the `model` should be the Vertex AI model name
+```
+{"custom_id": "request-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-1.5-flash-001", "messages": [{"role": "system", "content": "You are a helpful assistant."},{"role": "user", "content": "Hello world!"}],"max_tokens": 10}}
+{"custom_id": "request-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-1.5-flash-001", "messages": [{"role": "system", "content": "You are an unhelpful assistant."},{"role": "user", "content": "Hello world!"}],"max_tokens": 10}}
+```
 
 
-### **Dynamic Params**
+#### 2. Upload a File of batch requests
 
-You can set:
-- `vertex_credentials` (str) - can be a json string or filepath to your vertex ai service account.json
-- `vertex_location` (str) - place where vertex model is deployed (us-central1, asia-southeast1, etc.)
-- `vertex_project` Optional[str] - use if vertex project different from the one in vertex_credentials
-
-as dynamic params for a `litellm.completion` call. 
-
-<Tabs>
-<TabItem value="sdk" label="SDK">
+For `vertex_ai` litellm will upload the file to the provided `GCS_BUCKET_NAME`
 
 ```python
-from litellm import completion
-import json 
-
-## GET CREDENTIALS 
-file_path = 'path/to/vertex_ai_service_account.json'
-
-# Load the JSON file
-with open(file_path, 'r') as file:
-    vertex_credentials = json.load(file)
-
-# Convert to JSON string
-vertex_credentials_json = json.dumps(vertex_credentials)
-
-
-response = completion(
-  model="vertex_ai/gemini-pro",
-  messages=[{"content": "You are a good bot.","role": "system"}, {"content": "Hello, how are you?","role": "user"}], 
-  vertex_credentials=vertex_credentials_json,
-  vertex_project="my-special-project", 
-  vertex_location="my-special-location"
+import os
+oai_client = OpenAI(
+    api_key="sk-1234",               # litellm proxy API key
+    base_url="http://localhost:4000" # litellm proxy base url
+)
+file_name = "vertex_batch_completions.jsonl" # 
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(_current_dir, file_name)
+file_obj = oai_client.files.create(
+    file=open(file_path, "rb"),
+    purpose="batch",
+    extra_body={"custom_llm_provider": "vertex_ai"}, # tell litellm to use vertex_ai for this file upload
 )
 ```
 
-</TabItem>
-<TabItem value="proxy" label="PROXY">
+**Expected Response**
 
-```yaml
-model_list:
-    - model_name: gemini-1.5-pro
-      litellm_params:
-        model: gemini-1.5-pro
-        vertex_credentials: os.environ/VERTEX_FILE_PATH_ENV_VAR # os.environ["VERTEX_FILE_PATH_ENV_VAR"] = "/path/to/service_account.json" 
-        vertex_project: "my-special-project"
-        vertex_location: "my-special-location:
+```json
+{
+    "id": "gs://litellm-testing-bucket/litellm-vertex-files/publishers/google/models/gemini-1.5-flash-001/d3f198cd-c0d1-436d-9b1e-28e3f282997a",
+    "bytes": 416,
+    "created_at": 1733392026,
+    "filename": "litellm-vertex-files/publishers/google/models/gemini-1.5-flash-001/d3f198cd-c0d1-436d-9b1e-28e3f282997a",
+    "object": "file",
+    "purpose": "batch",
+    "status": "uploaded",
+    "status_details": null
+}
 ```
 
-</TabItem>
-</Tabs>
 
 
+#### 3. Create a batch 
 
-
-### **Environment Variables**
-
-You can set:
-- `GOOGLE_APPLICATION_CREDENTIALS` - store the filepath for your service_account.json in here (used by vertex sdk directly).
-- VERTEXAI_LOCATION - place where vertex model is deployed (us-central1, asia-southeast1, etc.)
-- VERTEXAI_PROJECT - Optional[str] - use if vertex project different from the one in vertex_credentials
-
-1. GOOGLE_APPLICATION_CREDENTIALS
-
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service_account.json"
+```python
+batch_input_file_id = file_obj.id # use `file_obj` from step 2
+create_batch_response = oai_client.batches.create(
+    completion_window="24h",
+    endpoint="/v1/chat/completions",
+    input_file_id=batch_input_file_id, # example input_file_id = "gs://litellm-testing-bucket/litellm-vertex-files/publishers/google/models/gemini-1.5-flash-001/c2b1b785-252b-448c-b180-033c4c63b3ce"
+    extra_body={"custom_llm_provider": "vertex_ai"}, # tell litellm to use `vertex_ai` for this batch request
+)
 ```
 
-2. VERTEXAI_LOCATION
+**Expected Response**
 
-```bash
-export VERTEXAI_LOCATION="us-central1" # can be any vertex location
-```
-
-3. VERTEXAI_PROJECT
-
-```bash
-export VERTEXAI_PROJECT="my-test-project" # ONLY use if model project is different from service account project
+```json
+{
+    "id": "projects/633608382793/locations/us-central1/batchPredictionJobs/986266568679751680",
+    "completion_window": "24hrs",
+    "created_at": 1733392026,
+    "endpoint": "",
+    "input_file_id": "gs://litellm-testing-bucket/litellm-vertex-files/publishers/google/models/gemini-1.5-flash-001/d3f198cd-c0d1-436d-9b1e-28e3f282997a",
+    "object": "batch",
+    "status": "validating",
+    "cancelled_at": null,
+    "cancelling_at": null,
+    "completed_at": null,
+    "error_file_id": null,
+    "errors": null,
+    "expired_at": null,
+    "expires_at": null,
+    "failed_at": null,
+    "finalizing_at": null,
+    "in_progress_at": null,
+    "metadata": null,
+    "output_file_id": "gs://litellm-testing-bucket/litellm-vertex-files/publishers/google/models/gemini-1.5-flash-001",
+    "request_counts": null
+}
 ```
 
 

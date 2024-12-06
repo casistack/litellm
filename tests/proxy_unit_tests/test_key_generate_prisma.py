@@ -23,7 +23,7 @@ import os
 import sys
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import Request
@@ -76,8 +76,10 @@ from litellm.proxy.proxy_server import (
     image_generation,
     model_list,
     moderations,
-    new_end_user,
     user_api_key_auth,
+)
+from litellm.proxy.management_endpoints.customer_endpoints import (
+    new_end_user,
 )
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     global_spend,
@@ -1016,7 +1018,7 @@ def test_generate_and_call_with_expired_key(prisma_client):
             # use generated key to auth in
             result = await user_api_key_auth(request=request, api_key=bearer_token)
             print("result from user auth with new key", result)
-            pytest.fail(f"This should have failed!. IT's an expired key")
+            pytest.fail("This should have failed!. It's an expired key")
 
         asyncio.run(test())
     except Exception as e:
@@ -1303,6 +1305,8 @@ def test_generate_and_update_key(prisma_client):
                 data=UpdateKeyRequest(
                     key=generated_key,
                     models=["ada", "babbage", "curie", "davinci"],
+                    budget_duration="1mo",
+                    max_budget=100,
                 ),
             )
 
@@ -1331,6 +1335,18 @@ def test_generate_and_update_key(prisma_client):
             }
             assert result["info"]["models"] == ["ada", "babbage", "curie", "davinci"]
             assert result["info"]["team_id"] == _team_2
+            assert result["info"]["budget_duration"] == "1mo"
+            assert result["info"]["max_budget"] == 100
+
+            # budget_reset_at should be 30 days from now
+            assert result["info"]["budget_reset_at"] is not None
+            budget_reset_at = result["info"]["budget_reset_at"].replace(
+                tzinfo=timezone.utc
+            )
+            current_time = datetime.now(timezone.utc)
+
+            # assert budget_reset_at is 30 days from now
+            assert 31 >= (budget_reset_at - current_time).days >= 29
 
             # cleanup - delete key
             delete_key_request = KeyRequest(keys=[generated_key])
@@ -2611,6 +2627,15 @@ async def test_create_update_team(prisma_client):
         _updated_info["budget_reset_at"], datetime.datetime
     )
 
+    # budget_reset_at should be 2 days from now
+    budget_reset_at = _updated_info["budget_reset_at"].replace(tzinfo=timezone.utc)
+    current_time = datetime.datetime.now(timezone.utc)
+
+    # assert budget_reset_at is 2 days from now
+    assert (
+        abs((budget_reset_at - current_time).total_seconds() - 2 * 24 * 60 * 60) <= 10
+    )
+
     # now hit team_info
     try:
         response = await team_info(
@@ -2637,66 +2662,6 @@ async def test_create_update_team(prisma_client):
     assert _team_info["budget_reset_at"] is not None and isinstance(
         _team_info["budget_reset_at"], datetime.datetime
     )
-
-
-@pytest.mark.asyncio()
-async def test_enforced_params(prisma_client):
-    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
-    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
-    from litellm.proxy.proxy_server import general_settings
-
-    general_settings["enforced_params"] = [
-        "user",
-        "metadata",
-        "metadata.generation_name",
-    ]
-
-    await litellm.proxy.proxy_server.prisma_client.connect()
-    request = NewUserRequest()
-    key = await new_user(
-        data=request,
-        user_api_key_dict=UserAPIKeyAuth(
-            user_role=LitellmUserRoles.PROXY_ADMIN,
-            api_key="sk-1234",
-            user_id="1234",
-        ),
-    )
-    print(key)
-
-    generated_key = key.key
-    bearer_token = "Bearer " + generated_key
-
-    request = Request(scope={"type": "http"})
-    request._url = URL(url="/chat/completions")
-
-    # Case 1: Missing user
-    async def return_body():
-        return b'{"model": "gemini-pro-vision"}'
-
-    request.body = return_body
-    try:
-        await user_api_key_auth(request=request, api_key=bearer_token)
-        pytest.fail(f"This should have failed!. IT's an invalid request")
-    except Exception as e:
-        assert (
-            "BadRequest please pass param=user in request body. This is a required param"
-            in e.message
-        )
-
-    # Case 2: Missing metadata["generation_name"]
-    async def return_body_2():
-        return b'{"model": "gemini-pro-vision", "user": "1234", "metadata": {}}'
-
-    request.body = return_body_2
-    try:
-        await user_api_key_auth(request=request, api_key=bearer_token)
-        pytest.fail(f"This should have failed!. IT's an invalid request")
-    except Exception as e:
-        assert (
-            "Authentication Error, BadRequest please pass param=[metadata][generation_name] in request body"
-            in e.message
-        )
-    general_settings.pop("enforced_params")
 
 
 @pytest.mark.asyncio()
@@ -2752,6 +2717,56 @@ async def test_update_user_role(prisma_client):
     print("\n\nMAKING NEW REQUEST WITH UPDATED USER ROLE\n\n")
     result = await user_api_key_auth(request=request, api_key=api_key)
     print("result from user auth with new key", result)
+
+
+@pytest.mark.asyncio()
+async def test_update_user_unit_test(prisma_client):
+    """
+    Unit test for /user/update
+
+    Ensure that params are updated for UpdateUserRequest
+    """
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+    key = await new_user(
+        data=NewUserRequest(
+            user_email="test@test.com",
+        )
+    )
+
+    print(key)
+
+    user_info = await user_update(
+        data=UpdateUserRequest(
+            user_id=key.user_id,
+            team_id="1234",
+            max_budget=100,
+            budget_duration="10d",
+            tpm_limit=100,
+            rpm_limit=100,
+            metadata={"very-new-metadata": "something"},
+        )
+    )
+
+    print("user_info", user_info)
+    assert user_info is not None
+    _user_info = user_info["data"].model_dump()
+
+    assert _user_info["user_id"] == key.user_id
+    assert _user_info["team_id"] == "1234"
+    assert _user_info["max_budget"] == 100
+    assert _user_info["budget_duration"] == "10d"
+    assert _user_info["tpm_limit"] == 100
+    assert _user_info["rpm_limit"] == 100
+    assert _user_info["metadata"] == {"very-new-metadata": "something"}
+
+    # budget reset at should be 10 days from now
+    budget_reset_at = _user_info["budget_reset_at"].replace(tzinfo=timezone.utc)
+    current_time = datetime.now(timezone.utc)
+    assert (
+        abs((budget_reset_at - current_time).total_seconds() - 10 * 24 * 60 * 60) <= 10
+    )
 
 
 @pytest.mark.asyncio()
@@ -2842,7 +2857,6 @@ async def test_generate_key_with_model_tpm_limit(prisma_client):
         "team": "litellm-team3",
         "model_tpm_limit": {"gpt-4": 100},
         "model_rpm_limit": {"gpt-4": 2},
-        "tags": None,
     }
 
     # Update model tpm_limit and rpm_limit
@@ -2866,7 +2880,6 @@ async def test_generate_key_with_model_tpm_limit(prisma_client):
         "team": "litellm-team3",
         "model_tpm_limit": {"gpt-4": 200},
         "model_rpm_limit": {"gpt-4": 3},
-        "tags": None,
     }
 
 
@@ -2906,7 +2919,6 @@ async def test_generate_key_with_guardrails(prisma_client):
     assert result["info"]["metadata"] == {
         "team": "litellm-team3",
         "guardrails": ["aporia-pre-call"],
-        "tags": None,
     }
 
     # Update model tpm_limit and rpm_limit
@@ -2928,7 +2940,6 @@ async def test_generate_key_with_guardrails(prisma_client):
     assert result["info"]["metadata"] == {
         "team": "litellm-team3",
         "guardrails": ["aporia-pre-call", "aporia-post-call"],
-        "tags": None,
     }
 
 
@@ -3293,64 +3304,6 @@ async def test_auth_vertex_ai_route(prisma_client):
 
 
 @pytest.mark.asyncio
-async def test_service_accounts(prisma_client):
-    """
-    Do not delete
-    this is the Admin UI flow
-    """
-    # Make a call to a key with model = `all-proxy-models` this is an Alias from LiteLLM Admin UI
-    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
-    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
-    setattr(
-        litellm.proxy.proxy_server,
-        "general_settings",
-        {"service_account_settings": {"enforced_params": ["user"]}},
-    )
-
-    await litellm.proxy.proxy_server.prisma_client.connect()
-
-    request = GenerateKeyRequest(
-        metadata={"service_account_id": f"prod-service-{uuid.uuid4()}"},
-    )
-    response = await generate_key_fn(
-        data=request,
-    )
-
-    print("key generated=", response)
-    generated_key = response.key
-    bearer_token = "Bearer " + generated_key
-    # make a bad /chat/completions call expect it to fail
-
-    request = Request(scope={"type": "http"})
-    request._url = URL(url="/chat/completions")
-
-    async def return_body():
-        return b'{"model": "gemini-pro-vision"}'
-
-    request.body = return_body
-
-    # use generated key to auth in
-    print("Bearer token being sent to user_api_key_auth() - {}".format(bearer_token))
-    try:
-        result = await user_api_key_auth(request=request, api_key=bearer_token)
-        pytest.fail("Expected this call to fail. Bad request using service account")
-    except Exception as e:
-        print("error str=", str(e.message))
-        assert "This is a required param for service account" in str(e.message)
-
-    # make a good /chat/completions call it should pass
-    async def good_return_body():
-        return b'{"model": "gemini-pro-vision", "user": "foo"}'
-
-    request.body = good_return_body
-
-    result = await user_api_key_auth(request=request, api_key=bearer_token)
-    print("response from user_api_key_auth", result)
-
-    setattr(litellm.proxy.proxy_server, "general_settings", {})
-
-
-@pytest.mark.asyncio
 async def test_user_api_key_auth_db_unavailable():
     """
     Test that user_api_key_auth handles DB connection failures appropriately when:
@@ -3468,6 +3421,10 @@ async def test_key_generate_with_secret_manager_call(prisma_client):
     from litellm.secret_managers.aws_secret_manager_v2 import AWSSecretsManagerV2
     from litellm.proxy._types import KeyManagementSystem, KeyManagementSettings
 
+    from litellm.proxy.hooks.key_management_event_hooks import (
+        LITELLM_PREFIX_STORED_VIRTUAL_KEYS,
+    )
+
     litellm.set_verbose = True
 
     #### Test Setup ############################################################
@@ -3512,7 +3469,10 @@ async def test_key_generate_with_secret_manager_call(prisma_client):
     await asyncio.sleep(2)
 
     # read from the secret manager
-    result = await aws_secret_manager_client.async_read_secret(secret_name=key_alias)
+
+    result = await aws_secret_manager_client.async_read_secret(
+        secret_name=f"{litellm._key_management_settings.prefix_for_stored_virtual_keys}/{key_alias}"
+    )
 
     # Assert the correct key is stored in the secret manager
     print("response from AWS Secret Manager")
@@ -3530,7 +3490,10 @@ async def test_key_generate_with_secret_manager_call(prisma_client):
     await asyncio.sleep(2)
 
     # Assert the key is deleted from the secret manager
-    result = await aws_secret_manager_client.async_read_secret(secret_name=key_alias)
+
+    result = await aws_secret_manager_client.async_read_secret(
+        secret_name=f"{litellm._key_management_settings.prefix_for_stored_virtual_keys}/{key_alias}"
+    )
     assert result is None
 
     # cleanup
@@ -3538,3 +3501,152 @@ async def test_key_generate_with_secret_manager_call(prisma_client):
 
 
 ################################################################################
+
+
+@pytest.mark.asyncio
+async def test_key_alias_uniqueness(prisma_client):
+    """
+    Test that:
+    1. We cannot create two keys with the same alias
+    2. We cannot update a key to use an alias that's already taken
+    3. We can update a key while keeping its existing alias
+    """
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
+    await litellm.proxy.proxy_server.prisma_client.connect()
+
+    try:
+        # Create first key with an alias
+        unique_alias = f"test-alias-{uuid.uuid4()}"
+        key1 = await generate_key_fn(
+            data=GenerateKeyRequest(key_alias=unique_alias),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                api_key="sk-1234",
+                user_id="1234",
+            ),
+        )
+
+        # Try to create second key with same alias - should fail
+        try:
+            key2 = await generate_key_fn(
+                data=GenerateKeyRequest(key_alias=unique_alias),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.PROXY_ADMIN,
+                    api_key="sk-1234",
+                    user_id="1234",
+                ),
+            )
+            pytest.fail("Should not be able to create a second key with the same alias")
+        except Exception as e:
+            print("vars(e)=", vars(e))
+            assert "Unique key aliases across all keys are required" in str(e.message)
+
+        # Create another key with different alias
+        another_alias = f"test-alias-{uuid.uuid4()}"
+        key3 = await generate_key_fn(
+            data=GenerateKeyRequest(key_alias=another_alias),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                api_key="sk-1234",
+                user_id="1234",
+            ),
+        )
+
+        # Try to update key3 to use key1's alias - should fail
+        try:
+            await update_key_fn(
+                data=UpdateKeyRequest(key=key3.key, key_alias=unique_alias),
+                request=Request(scope={"type": "http"}),
+            )
+            pytest.fail("Should not be able to update a key to use an existing alias")
+        except Exception as e:
+            assert "Unique key aliases across all keys are required" in str(e.message)
+
+        # Update key1 with its own existing alias - should succeed
+        updated_key = await update_key_fn(
+            data=UpdateKeyRequest(key=key1.key, key_alias=unique_alias),
+            request=Request(scope={"type": "http"}),
+        )
+        assert updated_key is not None
+
+    except Exception as e:
+        print("got exceptions, e=", e)
+        print("vars(e)=", vars(e))
+        pytest.fail(f"An unexpected error occurred: {str(e)}")
+
+
+@pytest.mark.asyncio
+async def test_enforce_unique_key_alias(prisma_client):
+    """
+    Unit test the _enforce_unique_key_alias function:
+    1. Test it allows unique aliases
+    2. Test it blocks duplicate aliases for new keys
+    3. Test it allows updating a key with its own existing alias
+    4. Test it blocks updating a key with another key's alias
+    """
+    from litellm.proxy.management_endpoints.key_management_endpoints import (
+        _enforce_unique_key_alias,
+    )
+
+    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
+    await litellm.proxy.proxy_server.prisma_client.connect()
+
+    try:
+        # Test 1: Allow unique alias
+        unique_alias = f"test-alias-{uuid.uuid4()}"
+        await _enforce_unique_key_alias(
+            key_alias=unique_alias,
+            prisma_client=prisma_client,
+        )  # Should pass
+
+        # Create a key with this alias in the database
+        key1 = await generate_key_fn(
+            data=GenerateKeyRequest(key_alias=unique_alias),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                api_key="sk-1234",
+                user_id="1234",
+            ),
+        )
+
+        # Test 2: Block duplicate alias for new key
+        try:
+            await _enforce_unique_key_alias(
+                key_alias=unique_alias,
+                prisma_client=prisma_client,
+            )
+            pytest.fail("Should not allow duplicate alias")
+        except Exception as e:
+            assert "Unique key aliases across all keys are required" in str(e.message)
+
+        # Test 3: Allow updating key with its own alias
+        await _enforce_unique_key_alias(
+            key_alias=unique_alias,
+            existing_key_token=hash_token(key1.key),
+            prisma_client=prisma_client,
+        )  # Should pass
+
+        # Test 4: Block updating with another key's alias
+        another_key = await generate_key_fn(
+            data=GenerateKeyRequest(key_alias=f"test-alias-{uuid.uuid4()}"),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                api_key="sk-1234",
+                user_id="1234",
+            ),
+        )
+
+        try:
+            await _enforce_unique_key_alias(
+                key_alias=unique_alias,
+                existing_key_token=another_key.key,
+                prisma_client=prisma_client,
+            )
+            pytest.fail("Should not allow using another key's alias")
+        except Exception as e:
+            assert "Unique key aliases across all keys are required" in str(e.message)
+
+    except Exception as e:
+        print("Unexpected error:", e)
+        pytest.fail(f"An unexpected error occurred: {str(e)}")

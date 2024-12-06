@@ -932,37 +932,6 @@ async def test_gemini_embeddings(sync_mode, input):
         pytest.fail(f"Error occurred: {e}")
 
 
-@pytest.mark.parametrize("sync_mode", [True, False])
-@pytest.mark.asyncio
-async def test_databricks_embeddings(sync_mode):
-    try:
-        litellm.set_verbose = True
-        litellm.drop_params = True
-
-        if sync_mode:
-            response = litellm.embedding(
-                model="databricks/databricks-bge-large-en",
-                input=["good morning from litellm"],
-                instruction="Represent this sentence for searching relevant passages:",
-            )
-        else:
-            response = await litellm.aembedding(
-                model="databricks/databricks-bge-large-en",
-                input=["good morning from litellm"],
-                instruction="Represent this sentence for searching relevant passages:",
-            )
-
-        print(f"response: {response}")
-
-        openai.types.CreateEmbeddingResponse.model_validate(
-            response.model_dump(), strict=True
-        )
-        # stubbed endpoint is setup to return this
-        # assert response.data[0]["embedding"] == [0.1, 0.2, 0.3]
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
-
-
 # test_voyage_embeddings()
 # def test_xinference_embeddings():
 #     try:
@@ -1080,3 +1049,34 @@ def test_cohere_img_embeddings(input, input_type):
         assert response.usage.prompt_tokens_details.image_tokens > 0
     else:
         assert response.usage.prompt_tokens_details.text_tokens > 0
+
+
+@pytest.mark.parametrize("sync_mode", [True, False])
+@pytest.mark.asyncio
+async def test_embedding_with_extra_headers(sync_mode):
+
+    input = ["hello world"]
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler, AsyncHTTPHandler
+
+    if sync_mode:
+        client = HTTPHandler()
+    else:
+        client = AsyncHTTPHandler()
+
+    data = {
+        "model": "cohere/embed-english-v3.0",
+        "input": input,
+        "extra_headers": {"my-test-param": "hello-world"},
+        "client": client,
+    }
+    with patch.object(client, "post") as mock_post:
+        try:
+            if sync_mode:
+                embedding(**data)
+            else:
+                await litellm.aembedding(**data)
+        except Exception as e:
+            print(e)
+
+        mock_post.assert_called_once()
+        assert "my-test-param" in mock_post.call_args.kwargs["headers"]

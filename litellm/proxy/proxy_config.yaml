@@ -1,14 +1,14 @@
 model_list:
-  - model_name: fake-openai-endpoint
+  - model_name: gpt-4o
     litellm_params:
-      model: openai/fake
-      api_key: os.environ/OPENAI_API_KEY
+      model: openai/gpt-4o
       api_base: https://exampleopenaiendpoint-production.up.railway.app/
+  - model_name: anthropic/*
+    litellm_params:
+      model: anthropic/fake
+      api_base: https://exampleanthropicendpoint-production.up.railway.app/
 
 
 
-general_settings:
-  key_management_system: "aws_secret_manager" 
-  key_management_settings: 
-    store_virtual_keys: true
-    access_mode: "write_only"
+litellm_settings:
+  callbacks: ["datadog"] 

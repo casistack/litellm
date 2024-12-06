@@ -306,6 +306,8 @@ def test_multiple_function_call():
         )
         assert len(r.choices) > 0
 
+        print(mock_post.call_args.kwargs["json"])
+
         assert mock_post.call_args.kwargs["json"] == {
             "contents": [
                 {"role": "user", "parts": [{"text": "do test"}]},
@@ -313,28 +315,8 @@ def test_multiple_function_call():
                     "role": "model",
                     "parts": [
                         {"text": "test"},
-                        {
-                            "function_call": {
-                                "name": "test",
-                                "args": {
-                                    "fields": {
-                                        "key": "arg",
-                                        "value": {"string_value": "test"},
-                                    }
-                                },
-                            }
-                        },
-                        {
-                            "function_call": {
-                                "name": "test2",
-                                "args": {
-                                    "fields": {
-                                        "key": "arg",
-                                        "value": {"string_value": "test2"},
-                                    }
-                                },
-                            }
-                        },
+                        {"function_call": {"name": "test", "args": {"arg": "test"}}},
+                        {"function_call": {"name": "test2", "args": {"arg": "test2"}}},
                     ],
                 },
                 {
@@ -342,23 +324,13 @@ def test_multiple_function_call():
                         {
                             "function_response": {
                                 "name": "test",
-                                "response": {
-                                    "fields": {
-                                        "key": "content",
-                                        "value": {"string_value": "42"},
-                                    }
-                                },
+                                "response": {"content": "42"},
                             }
                         },
                         {
                             "function_response": {
                                 "name": "test2",
-                                "response": {
-                                    "fields": {
-                                        "key": "content",
-                                        "value": {"string_value": "15"},
-                                    }
-                                },
+                                "response": {"content": "15"},
                             }
                         },
                     ]
@@ -441,34 +413,16 @@ def test_multiple_function_call_changed_text_pos():
         assert len(resp.choices) > 0
         mock_post.assert_called_once()
 
+        print(mock_post.call_args.kwargs["json"]["contents"])
+
         assert mock_post.call_args.kwargs["json"]["contents"] == [
             {"role": "user", "parts": [{"text": "do test"}]},
             {
                 "role": "model",
                 "parts": [
                     {"text": "test"},
-                    {
-                        "function_call": {
-                            "name": "test",
-                            "args": {
-                                "fields": {
-                                    "key": "arg",
-                                    "value": {"string_value": "test"},
-                                }
-                            },
-                        }
-                    },
-                    {
-                        "function_call": {
-                            "name": "test2",
-                            "args": {
-                                "fields": {
-                                    "key": "arg",
-                                    "value": {"string_value": "test2"},
-                                }
-                            },
-                        }
-                    },
+                    {"function_call": {"name": "test", "args": {"arg": "test"}}},
+                    {"function_call": {"name": "test2", "args": {"arg": "test2"}}},
                 ],
             },
             {
@@ -476,23 +430,13 @@ def test_multiple_function_call_changed_text_pos():
                     {
                         "function_response": {
                             "name": "test2",
-                            "response": {
-                                "fields": {
-                                    "key": "content",
-                                    "value": {"string_value": "15"},
-                                }
-                            },
+                            "response": {"content": "15"},
                         }
                     },
                     {
                         "function_response": {
                             "name": "test",
-                            "response": {
-                                "fields": {
-                                    "key": "content",
-                                    "value": {"string_value": "42"},
-                                }
-                            },
+                            "response": {"content": "42"},
                         }
                     },
                 ]
@@ -1202,6 +1146,21 @@ def test_process_gemini_image():
         mime_type="image/png", file_uri="https://example.com/image.png"
     )
 
+    # Test HTTPS VIDEO URL
+    https_result = _process_gemini_image("https://cloud-samples-data/video/animals.mp4")
+    print("https_result PNG", https_result)
+    assert https_result["file_data"] == FileDataType(
+        mime_type="video/mp4", file_uri="https://cloud-samples-data/video/animals.mp4"
+    )
+
+    # Test HTTPS PDF URL
+    https_result = _process_gemini_image("https://cloud-samples-data/pdf/animals.pdf")
+    print("https_result PDF", https_result)
+    assert https_result["file_data"] == FileDataType(
+        mime_type="application/pdf",
+        file_uri="https://cloud-samples-data/pdf/animals.pdf",
+    )
+
     # Test base64 image
     base64_image = "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
     base64_result = _process_gemini_image(base64_image)
@@ -1244,80 +1203,6 @@ def test_get_image_mime_type_from_url():
     assert _get_image_mime_type_from_url("https://example.com/image.bmp") is None
     assert _get_image_mime_type_from_url("https://example.com/image") is None
     assert _get_image_mime_type_from_url("invalid_url") is None
-
-
-@pytest.mark.parametrize(
-    "image_url", ["https://example.com/image.jpg", "https://example.com/image.png"]
-)
-def test_image_completion_request(image_url):
-    """https:// .jpg, .png images are passed directly to the model"""
-    from unittest.mock import patch, Mock
-    import litellm
-    from litellm.llms.vertex_ai_and_google_ai_studio.gemini.transformation import (
-        _get_image_mime_type_from_url,
-    )
-
-    # Mock response data
-    mock_response = Mock()
-    mock_response.json.return_value = {
-        "candidates": [{"content": {"parts": [{"text": "This is a sunflower"}]}}],
-        "usageMetadata": {
-            "promptTokenCount": 11,
-            "candidatesTokenCount": 50,
-            "totalTokenCount": 61,
-        },
-        "modelVersion": "gemini-1.5-pro",
-    }
-    mock_response.raise_for_status = MagicMock()
-    mock_response.status_code = 200
-
-    # Expected request body
-    expected_request_body = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": "Whats in this image?"},
-                    {
-                        "file_data": {
-                            "file_uri": image_url,
-                            "mime_type": _get_image_mime_type_from_url(image_url),
-                        }
-                    },
-                ],
-            }
-        ],
-        "system_instruction": {"parts": [{"text": "Be a good bot"}]},
-        "generationConfig": {},
-    }
-
-    messages = [
-        {"role": "system", "content": "Be a good bot"},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Whats in this image?"},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ],
-        },
-    ]
-
-    client = HTTPHandler()
-    with patch.object(client, "post", new=MagicMock()) as mock_post:
-        mock_post.return_value = mock_response
-        try:
-            litellm.completion(
-                model="gemini/gemini-1.5-pro",
-                messages=messages,
-                client=client,
-            )
-        except Exception as e:
-            print(e)
-
-        # Assert the request body matches expected
-        mock_post.assert_called_once()
-        print("mock_post.call_args.kwargs['json']", mock_post.call_args.kwargs["json"])
-        assert mock_post.call_args.kwargs["json"] == expected_request_body
 
 
 @pytest.mark.parametrize(

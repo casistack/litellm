@@ -1450,7 +1450,7 @@ async def test_mistral_on_router():
         {
             "model_name": "gpt-3.5-turbo",
             "litellm_params": {
-                "model": "mistral/mistral-medium",
+                "model": "mistral/mistral-small-latest",
             },
         },
     ]
@@ -2115,10 +2115,14 @@ def test_router_get_model_info(model, base_model, llm_provider):
     assert deployment is not None
 
     if llm_provider == "openai" or (base_model is not None and llm_provider == "azure"):
-        router.get_router_model_info(deployment=deployment.to_json())
+        router.get_router_model_info(
+            deployment=deployment.to_json(), received_model_name=model
+        )
     else:
         try:
-            router.get_router_model_info(deployment=deployment.to_json())
+            router.get_router_model_info(
+                deployment=deployment.to_json(), received_model_name=model
+            )
             pytest.fail("Expected this to raise model not mapped error")
         except Exception as e:
             if "This model isn't mapped yet" in str(e):
@@ -2338,12 +2342,6 @@ def test_router_dynamic_cooldown_correct_retry_after_time():
             pass
 
         new_retry_after_mock_client.assert_called()
-        print(
-            f"new_retry_after_mock_client.call_args.kwargs: {new_retry_after_mock_client.call_args.kwargs}"
-        )
-        print(
-            f"new_retry_after_mock_client.call_args: {new_retry_after_mock_client.call_args[0][0]}"
-        )
 
         response_headers: httpx.Headers = new_retry_after_mock_client.call_args[0][0]
         assert int(response_headers["retry-after"]) == cooldown_time
