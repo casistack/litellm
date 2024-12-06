@@ -11,7 +11,7 @@ WORKDIR /app
 
 # Install build dependencies
 RUN apt-get clean && apt-get update && \
-    apt-get install -y gcc python3-dev && \
+    apt-get install -y gcc python3-dev nano && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip && \
