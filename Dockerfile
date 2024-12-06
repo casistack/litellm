@@ -50,8 +50,11 @@ RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 # Update dependencies and clean up - handles debian security issue
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* 
-
+##RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* 
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y nano && \
+    rm -rf /var/lib/apt/lists/*
+    
 WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . .
