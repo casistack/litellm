@@ -20,9 +20,9 @@ services:
       REPLICATE_API_KEY: "${REPLICATE_API_KEY}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
       TOGETHERAI_API_KEY: "${TOGETHERAI_API_KEY}"
-      UI_USERNAME: "${UI_USERNAME:-admin}"
-      UI_PASSWORD: "${UI_PASSWORD:-your-secure-password}"
-      PROXY_ADMIN_ID: "${PROXY_ADMIN_ID:-admin}"
+      UI_USERNAME: "${UI_USERNAME}"
+      UI_PASSWORD: "${UI_PASSWORD}"
+      PROXY_ADMIN_ID: "${PROXY_ADMIN_ID}"
     restart: unless-stopped
     depends_on:
       - db
