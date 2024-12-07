@@ -20,8 +20,9 @@ services:
       REPLICATE_API_KEY: "${REPLICATE_API_KEY}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
       TOGETHERAI_API_KEY: "${TOGETHERAI_API_KEY}"
-    #env_file:
-      #- .env
+      UI_USERNAME: "${UI_USERNAME:-admin}"
+      UI_PASSWORD: "${UI_PASSWORD:-your-secure-password}"
+      PROXY_ADMIN_ID: "${PROXY_ADMIN_ID:-admin}"
     restart: unless-stopped
     depends_on:
       - db
