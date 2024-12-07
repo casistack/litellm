@@ -23,6 +23,10 @@ services:
       UI_USERNAME: "${UI_USERNAME}"
       UI_PASSWORD: "${UI_PASSWORD}"
       PROXY_ADMIN_ID: "${PROXY_ADMIN_ID}"
+      ALLOW_USER_AUTH: "${ALLOW_USER_AUTH:-true}"
+      UI_ACCESS_MODE: "${UI_ACCESS_MODE}"
+      SSO_MODE: "${SSO_MODE:-false}"
+      AUTH_MODE: "${AUTH_MODE}"
     restart: unless-stopped
     depends_on:
       - db
