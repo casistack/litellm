@@ -58,6 +58,7 @@ FROM $LITELLM_RUNTIME_IMAGE as runtime
 # Security updates
 RUN apt-get update && \
     apt-get upgrade -y && \
+    apt-get install -y nano && \
     rm -rf /var/lib/apt/lists/* 
 
 # Setup application directory
