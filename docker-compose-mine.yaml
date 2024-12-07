@@ -27,6 +27,8 @@ services:
       - db
   db:
     image: postgres
+    ports:
+      - "6656:5432"
     restart: always
     environment:
       POSTGRES_PASSWORD: "${DB_PASSWORD:-example}"
