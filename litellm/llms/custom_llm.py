@@ -29,8 +29,7 @@ from typing import (
     Union,
 )
 
-import httpx  # type: ignore
-import requests  # type: ignore
+import httpx
 
 import litellm
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
@@ -45,7 +44,6 @@ from litellm.utils import (
 )
 
 from .base import BaseLLM
-from .prompt_templates.factory import custom_prompt, prompt_factory
 
 
 class CustomLLMError(Exception):  # use this for all your exceptions

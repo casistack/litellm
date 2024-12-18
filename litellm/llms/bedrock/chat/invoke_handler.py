@@ -25,13 +25,23 @@ from typing import (
 )
 
 import httpx  # type: ignore
-import requests  # type: ignore
 
 import litellm
 from litellm import verbose_logger
 from litellm.caching.caching import InMemoryCache
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.litellm_core_utils.litellm_logging import Logging
+from litellm.litellm_core_utils.prompt_templates.factory import (
+    _bedrock_converse_messages_pt,
+    _bedrock_tools_pt,
+    cohere_message_pt,
+    construct_tool_use_system_prompt,
+    contains_tag,
+    custom_prompt,
+    extract_between_tags,
+    parse_xml_params,
+    prompt_factory,
+)
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
     HTTPHandler,
@@ -50,20 +60,10 @@ from litellm.types.llms.openai import (
     ChatCompletionUsageBlock,
 )
 from litellm.types.utils import GenericStreamingChunk as GChunk
-from litellm.utils import CustomStreamWrapper, ModelResponse, Usage, get_secret
+from litellm.types.utils import ModelResponse, Usage
+from litellm.utils import CustomStreamWrapper, get_secret
 
-from ...base_aws_llm import BaseAWSLLM
-from ...prompt_templates.factory import (
-    _bedrock_converse_messages_pt,
-    _bedrock_tools_pt,
-    cohere_message_pt,
-    construct_tool_use_system_prompt,
-    contains_tag,
-    custom_prompt,
-    extract_between_tags,
-    parse_xml_params,
-    prompt_factory,
-)
+from ..base_aws_llm import BaseAWSLLM
 from ..common_utils import BedrockError, ModelResponseIterator, get_bedrock_tool_name
 from .converse_transformation import AmazonConverseConfig
 
@@ -315,7 +315,7 @@ class BedrockLLM(BaseAWSLLM):
     def process_response(  # noqa: PLR0915
         self,
         model: str,
-        response: Union[requests.Response, httpx.Response],
+        response: httpx.Response,
         model_response: ModelResponse,
         stream: bool,
         logging_obj: Logging,
@@ -1040,9 +1040,6 @@ class BedrockLLM(BaseAWSLLM):
         )
         return streaming_response
 
-    def embedding(self, *args, **kwargs):
-        return super().embedding(*args, **kwargs)
-
 
 def get_response_stream_shape():
     global _response_stream_shape_cache
@@ -1317,7 +1314,7 @@ class MockResponseIterator:  # for returning ai21 streaming responses
 
     def _chunk_parser(self, chunk_data: ModelResponse) -> GChunk:
         try:
-            chunk_usage: litellm.Usage = getattr(chunk_data, "usage")
+            chunk_usage: Usage = getattr(chunk_data, "usage")
             text = chunk_data.choices[0].message.content or ""  # type: ignore
             tool_use = None
             if self.json_mode is True:

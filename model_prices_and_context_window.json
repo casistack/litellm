@@ -71,6 +71,21 @@
         "supports_audio_input": true,
         "supports_audio_output": true
     },
+    "gpt-4o-mini-audio-preview-2024-12-17": {
+        "max_tokens": 16384,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16384,
+        "input_cost_per_token": 0.00000015,
+        "input_cost_per_audio_token": 0.00001,
+        "output_cost_per_token": 0.0000006,
+        "output_cost_per_audio_token": 0.00002,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true
+    },
     "gpt-4o-mini": {
         "max_tokens": 16384,
         "max_input_tokens": 128000,
@@ -99,6 +114,20 @@
         "supports_parallel_function_calling": true,
         "supports_response_schema": true,
         "supports_vision": true,
+        "supports_prompt_caching": true
+    },
+    "o1": {
+        "max_tokens": 100000,
+        "max_input_tokens": 200000,
+        "max_output_tokens": 100000,
+        "input_cost_per_token": 0.000015,
+        "output_cost_per_token": 0.00006,
+        "cache_read_input_token_cost": 0.0000075,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_vision": false,
         "supports_prompt_caching": true
     },
     "o1-mini": {
@@ -147,6 +176,20 @@
         "max_tokens": 32768,
         "max_input_tokens": 128000,
         "max_output_tokens": 32768,
+        "input_cost_per_token": 0.000015,
+        "output_cost_per_token": 0.000060,
+        "cache_read_input_token_cost": 0.0000075,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_vision": false,
+        "supports_prompt_caching": true
+    },
+    "o1-2024-12-17": {
+        "max_tokens": 100000,
+        "max_input_tokens": 200000,
+        "max_output_tokens": 100000,
         "input_cost_per_token": 0.000015,
         "output_cost_per_token": 0.000060,
         "cache_read_input_token_cost": 0.0000075,
@@ -212,6 +255,89 @@
         "supports_response_schema": true,
         "supports_vision": true,
         "supports_prompt_caching": true
+    },
+    "gpt-4o-realtime-preview-2024-10-01": {
+        "max_tokens": 4096,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "input_cost_per_token": 0.000005,
+        "input_cost_per_audio_token": 0.0001,
+        "cache_read_input_token_cost": 0.0000025,
+        "cache_creation_input_audio_token_cost": 0.00002,
+        "output_cost_per_token": 0.00002,
+        "output_cost_per_audio_token": 0.0002,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true
+    },
+    "gpt-4o-realtime-preview": {
+        "max_tokens": 4096,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "input_cost_per_token": 0.000005,
+        "input_cost_per_audio_token": 0.00004,
+        "cache_read_input_token_cost": 0.0000025,
+        "output_cost_per_token": 0.00002,
+        "output_cost_per_audio_token": 0.00008,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true
+    },
+    "gpt-4o-realtime-preview-2024-12-17": {
+        "max_tokens": 4096,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "input_cost_per_token": 0.000005,
+        "input_cost_per_audio_token": 0.00004,
+        "cache_read_input_token_cost": 0.0000025,
+        "output_cost_per_token": 0.00002,
+        "output_cost_per_audio_token": 0.00008,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true
+    },
+    "gpt-4o-mini-realtime-preview": {
+        "max_tokens": 4096,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "input_cost_per_token": 0.0000006,
+        "input_cost_per_audio_token": 0.00001,
+        "cache_read_input_token_cost": 0.0000003,
+        "cache_creation_input_audio_token_cost": 0.0000003,
+        "output_cost_per_token": 0.0000024,
+        "output_cost_per_audio_token": 0.00002,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true
+    },
+    "gpt-4o-mini-realtime-preview-2024-12-17": {
+        "max_tokens": 4096,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 4096,
+        "input_cost_per_token": 0.0000006,
+        "input_cost_per_audio_token": 0.00001,
+        "cache_read_input_token_cost": 0.0000003,
+        "cache_creation_input_audio_token_cost": 0.0000003,
+        "output_cost_per_token": 0.0000024,
+        "output_cost_per_audio_token": 0.00002,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_audio_input": true,
+        "supports_audio_output": true
     },
     "gpt-4-turbo-preview": {
         "max_tokens": 4096,
@@ -489,26 +615,30 @@
         "max_input_tokens": 128000,
         "max_output_tokens": 16384,
         "input_cost_per_token": 0.00000375,
+        "cache_creation_input_token_cost": 0.000001875,
         "output_cost_per_token": 0.000015,
         "litellm_provider": "openai",
         "mode": "chat",
         "supports_function_calling": true,
         "supports_parallel_function_calling": true,
         "supports_response_schema": true,
-        "supports_vision": true
+        "supports_vision": true,
+        "supports_prompt_caching": true
     },
     "ft:gpt-4o-mini-2024-07-18": {
         "max_tokens": 16384,
         "max_input_tokens": 128000,
         "max_output_tokens": 16384,
         "input_cost_per_token": 0.0000003,
+        "cache_read_input_token_cost": 0.00000015,
         "output_cost_per_token": 0.0000012,
         "litellm_provider": "openai",
         "mode": "chat",
         "supports_function_calling": true,
         "supports_parallel_function_calling": true,
         "supports_response_schema": true,
-        "supports_vision": true
+        "supports_vision": true,
+        "supports_prompt_caching": true
     },
     "ft:davinci-002": {
         "max_tokens": 16384,
@@ -1178,7 +1308,7 @@
         "mode": "chat"
     },
     "azure_ai/mistral-large-2407": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.000002,
@@ -1189,7 +1319,7 @@
         "source": "https://azuremarketplace.microsoft.com/en/marketplace/apps/000-000.mistral-ai-large-2407-offer?tab=Overview"
     },
     "azure_ai/ministral-3b": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000004,
@@ -1200,7 +1330,7 @@
         "source": "https://azuremarketplace.microsoft.com/en/marketplace/apps/000-000.ministral-3b-2410-offer?tab=Overview"
     },    
     "azure_ai/Llama-3.2-11B-Vision-Instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 2048,
         "max_input_tokens": 128000,
         "max_output_tokens": 2048,
         "input_cost_per_token": 0.00000037,
@@ -1211,8 +1341,19 @@
         "mode": "chat",
         "source": "https://azuremarketplace.microsoft.com/en/marketplace/apps/metagenai.meta-llama-3-2-11b-vision-instruct-offer?tab=Overview"
     },
+    "azure_ai/Llama-3.3-70B-Instruct": {
+        "max_tokens": 2048,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 2048,
+        "input_cost_per_token": 0.00000071,
+        "output_cost_per_token": 0.00000071,
+        "litellm_provider": "azure_ai",
+        "supports_function_calling": true,
+        "mode": "chat",
+        "source": "https://azuremarketplace.microsoft.com/en/marketplace/apps/metagenai.llama-3-3-70b-instruct-offer?tab=Overview"
+    },
     "azure_ai/Llama-3.2-90B-Vision-Instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 2048,
         "max_input_tokens": 128000,
         "max_output_tokens": 2048,
         "input_cost_per_token": 0.00000204,
@@ -1224,18 +1365,18 @@
         "source": "https://azuremarketplace.microsoft.com/en/marketplace/apps/metagenai.meta-llama-3-2-90b-vision-instruct-offer?tab=Overview"
     },
     "azure_ai/Meta-Llama-3-70B-Instruct": {
-        "max_tokens": 8192,
+        "max_tokens": 2048,
         "max_input_tokens": 8192,
-        "max_output_tokens": 8192,
+        "max_output_tokens": 2048,
         "input_cost_per_token": 0.0000011,
         "output_cost_per_token": 0.00000037,
         "litellm_provider": "azure_ai",
         "mode": "chat"
     },
     "azure_ai/Meta-Llama-3.1-8B-Instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 2048,
         "max_input_tokens": 128000,
-        "max_output_tokens": 128000,
+        "max_output_tokens": 2048,
         "input_cost_per_token": 0.0000003,
         "output_cost_per_token": 0.00000061,
         "litellm_provider": "azure_ai",
@@ -1243,9 +1384,9 @@
         "source":"https://azuremarketplace.microsoft.com/en-us/marketplace/apps/metagenai.meta-llama-3-1-8b-instruct-offer?tab=PlansAndPrice"
     },
     "azure_ai/Meta-Llama-3.1-70B-Instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 2048,
         "max_input_tokens": 128000,
-        "max_output_tokens": 128000,
+        "max_output_tokens": 2048,
         "input_cost_per_token": 0.00000268,
         "output_cost_per_token": 0.00000354,
         "litellm_provider": "azure_ai",
@@ -1253,9 +1394,9 @@
         "source":"https://azuremarketplace.microsoft.com/en-us/marketplace/apps/metagenai.meta-llama-3-1-70b-instruct-offer?tab=PlansAndPrice"
     },
     "azure_ai/Meta-Llama-3.1-405B-Instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 2048,
         "max_input_tokens": 128000,
-        "max_output_tokens": 128000,
+        "max_output_tokens": 2048,
         "input_cost_per_token": 0.00000533,
         "output_cost_per_token": 0.000016,
         "litellm_provider": "azure_ai",
@@ -1263,7 +1404,7 @@
         "source":"https://azuremarketplace.microsoft.com/en-us/marketplace/apps/metagenai.meta-llama-3-1-405b-instruct-offer?tab=PlansAndPrice"
     },
     "azure_ai/Phi-3.5-mini-instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000013,
@@ -1274,7 +1415,7 @@
         "source": "https://azure.microsoft.com/en-us/pricing/details/phi-3/"
     },
     "azure_ai/Phi-3.5-vision-instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000013,
@@ -1285,7 +1426,7 @@
         "source": "https://azure.microsoft.com/en-us/pricing/details/phi-3/"
     },
     "azure_ai/Phi-3.5-MoE-instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000016,
@@ -1307,7 +1448,7 @@
         "source": "https://azure.microsoft.com/en-us/pricing/details/phi-3/"
     },
     "azure_ai/Phi-3-mini-128k-instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000013,
@@ -1318,7 +1459,7 @@
         "source": "https://azure.microsoft.com/en-us/pricing/details/phi-3/"
     },
     "azure_ai/Phi-3-small-8k-instruct": {
-        "max_tokens": 8192,
+        "max_tokens": 4096,
         "max_input_tokens": 8192,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000015,
@@ -1329,7 +1470,7 @@
         "source": "https://azure.microsoft.com/en-us/pricing/details/phi-3/"
     },
     "azure_ai/Phi-3-small-128k-instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000015,
@@ -1351,7 +1492,7 @@
         "source": "https://azure.microsoft.com/en-us/pricing/details/phi-3/"
     },
     "azure_ai/Phi-3-medium-128k-instruct": {
-        "max_tokens": 128000,
+        "max_tokens": 4096,
         "max_input_tokens": 128000,
         "max_output_tokens": 4096,
         "input_cost_per_token": 0.00000017,
@@ -2924,6 +3065,38 @@
         "litellm_provider": "vertex_ai-language-models",
         "mode": "chat",
         "source": "https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models#foundation_models"
+    },
+    "gemini-2.0-flash-exp": {
+        "max_tokens": 8192,
+        "max_input_tokens": 1048576,
+        "max_output_tokens": 8192,
+        "max_images_per_prompt": 3000,
+        "max_videos_per_prompt": 10,
+        "max_video_length": 1,
+        "max_audio_length_hours": 8.4,
+        "max_audio_per_prompt": 1,
+        "max_pdf_size_mb": 30,
+        "input_cost_per_image": 0,
+        "input_cost_per_video_per_second": 0,
+        "input_cost_per_audio_per_second": 0,
+        "input_cost_per_token": 0,
+        "input_cost_per_character": 0, 
+        "input_cost_per_token_above_128k_tokens": 0, 
+        "input_cost_per_character_above_128k_tokens": 0, 
+        "input_cost_per_image_above_128k_tokens": 0,
+        "input_cost_per_video_per_second_above_128k_tokens": 0,
+        "input_cost_per_audio_per_second_above_128k_tokens": 0,
+        "output_cost_per_token": 0,
+        "output_cost_per_character": 0,
+        "output_cost_per_token_above_128k_tokens": 0,
+        "output_cost_per_character_above_128k_tokens": 0,
+        "litellm_provider": "vertex_ai-language-models",
+        "mode": "chat",
+        "supports_system_messages": true,
+        "supports_function_calling": true,
+        "supports_vision": true,
+        "supports_response_schema": true,
+        "source": "https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models#gemini-2.0-flash"
     },
     "vertex_ai/claude-3-sonnet": {
         "max_tokens": 4096,
@@ -7253,6 +7426,19 @@
         "metadata": {"notes": "Input/output cost per token is dbu cost * $0.070, based on databricks Llama 3.1 70B conversion. Number provided for reference, '*_dbu_cost_per_token' used in actual calculation."}
     },
     "databricks/databricks-meta-llama-3-1-70b-instruct": {
+        "max_tokens": 128000,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 128000, 
+        "input_cost_per_token": 0.00000100002,
+        "input_dbu_cost_per_token": 0.000014286,
+        "output_cost_per_token": 0.00000299999,
+        "output_dbu_cost_per_token": 0.000042857,
+        "litellm_provider": "databricks",
+        "mode": "chat",
+        "source": "https://www.databricks.com/product/pricing/foundation-model-serving",
+        "metadata": {"notes": "Input/output cost per token is dbu cost * $0.070, based on databricks Llama 3.1 70B conversion. Number provided for reference, '*_dbu_cost_per_token' used in actual calculation."}
+    },
+    "databricks/meta-llama-3.3-70b-instruct": {
         "max_tokens": 128000,
         "max_input_tokens": 128000,
         "max_output_tokens": 128000, 

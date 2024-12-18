@@ -13,8 +13,7 @@ from enum import Enum
 from functools import partial
 from typing import Any, Callable, List, Literal, Optional, Tuple, Union
 
-import httpx  # type: ignore
-import requests  # type: ignore
+import httpx
 
 import litellm
 from litellm import LlmProviders
@@ -26,6 +25,8 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
 )
 from litellm.llms.databricks.streaming_utils import ModelResponseIterator
+from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
+from litellm.llms.openai.openai import OpenAIConfig
 from litellm.types.utils import CustomStreamingDecoder, ModelResponse
 from litellm.utils import (
     Choices,
@@ -277,10 +278,13 @@ class OpenAILikeChatHandler(OpenAILikeBase):
             optional_params["stream"] = stream
 
         if messages is not None and custom_llm_provider is not None:
-            provider_config = ProviderConfigManager.get_provider_config(
+            provider_config = ProviderConfigManager.get_provider_chat_config(
                 model=model, provider=LlmProviders(custom_llm_provider)
             )
-            messages = provider_config._transform_messages(messages)
+            if isinstance(provider_config, OpenAIGPTConfig) or isinstance(
+                provider_config, OpenAIConfig
+            ):
+                messages = provider_config._transform_messages(messages)
 
         data = {
             "model": model,
