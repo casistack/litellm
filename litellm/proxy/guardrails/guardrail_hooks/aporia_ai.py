@@ -11,27 +11,19 @@ import sys
 sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
-import asyncio
 import json
 import sys
-import traceback
-import uuid
-from datetime import datetime
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, List, Literal, Optional
 
-import aiohttp
-import httpx
 from fastapi import HTTPException
 
 import litellm
 from litellm._logging import verbose_proxy_logger
-from litellm.caching.caching import DualCache
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.litellm_core_utils.logging_utils import (
     convert_litellm_response_object_to_str,
 )
 from litellm.llms.custom_httpx.http_handler import (
-    AsyncHTTPHandler,
     get_async_httpx_client,
     httpxSpecialProvider,
 )
@@ -94,10 +86,17 @@ class AporiaGuardrail(CustomGuardrail):
         return data
 
     async def make_aporia_api_request(
-        self, new_messages: List[dict], response_string: Optional[str] = None
+        self,
+        request_data: dict,
+        new_messages: List[dict],
+        response_string: Optional[str] = None,
     ):
         data = await self.prepare_aporia_request(
             new_messages=new_messages, response_string=response_string
+        )
+
+        data.update(
+            self.get_guardrail_dynamic_request_body_params(request_data=request_data)
         )
 
         _json_data = json.dumps(data)
@@ -163,7 +162,9 @@ class AporiaGuardrail(CustomGuardrail):
         response_str: Optional[str] = convert_litellm_response_object_to_str(response)
         if response_str is not None:
             await self.make_aporia_api_request(
-                response_string=response_str, new_messages=data.get("messages", [])
+                request_data=data,
+                response_string=response_str,
+                new_messages=data.get("messages", []),
             )
 
             add_guardrail_to_applied_guardrails_header(
@@ -207,7 +208,10 @@ class AporiaGuardrail(CustomGuardrail):
             new_messages = self.transform_messages(messages=data["messages"])
 
         if new_messages is not None:
-            await self.make_aporia_api_request(new_messages=new_messages)
+            await self.make_aporia_api_request(
+                request_data=data,
+                new_messages=new_messages,
+            )
             add_guardrail_to_applied_guardrails_header(
                 request_data=data, guardrail_name=self.guardrail_name
             )

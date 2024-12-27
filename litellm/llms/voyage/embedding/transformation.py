@@ -1,16 +1,13 @@
-import json
-from typing import Any, List, Optional, Tuple, Union
+from typing import List, Optional, Union
 
 import httpx
 
-import litellm
-from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.embedding.transformation import BaseEmbeddingConfig
 from litellm.secret_managers.main import get_secret_str
-from litellm.types.llms.openai import AllMessageValues
-from litellm.types.utils import EmbeddingResponse, ModelResponse, Usage
+from litellm.types.llms.openai import AllEmbeddingInputValues, AllMessageValues
+from litellm.types.utils import EmbeddingResponse, Usage
 
 
 class VoyageError(BaseLLMException):
@@ -41,7 +38,13 @@ class VoyageEmbeddingConfig(BaseEmbeddingConfig):
     def __init__(self) -> None:
         pass
 
-    def get_complete_url(self, api_base: Optional[str], model: str) -> str:
+    def get_complete_url(
+        self,
+        api_base: Optional[str],
+        model: str,
+        optional_params: dict,
+        stream: Optional[bool] = None,
+    ) -> str:
         if api_base:
             if not api_base.endswith("/embeddings"):
                 api_base = f"{api_base}/embeddings"
@@ -93,7 +96,7 @@ class VoyageEmbeddingConfig(BaseEmbeddingConfig):
     def transform_embedding_request(
         self,
         model: str,
-        input: Union[str, List[str], List[float], List[List[float]]],
+        input: AllEmbeddingInputValues,
         optional_params: dict,
         headers: dict,
     ) -> dict:

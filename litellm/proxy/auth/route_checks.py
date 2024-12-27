@@ -11,10 +11,8 @@ from litellm.proxy._types import (
     LitellmUserRoles,
     UserAPIKeyAuth,
 )
-from litellm.proxy.utils import hash_token
 
 from .auth_checks_organization import _user_is_org_admin
-from .auth_utils import _has_user_setup_sso
 
 
 class RouteChecks:
@@ -193,6 +191,8 @@ class RouteChecks:
         if "/anthropic/" in route:
             return True
         if "/azure/" in route:
+            return True
+        if "/openai/" in route:
             return True
         return False
 

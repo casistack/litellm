@@ -74,11 +74,7 @@ class ProviderField(TypedDict):
     field_value: str
 
 
-class ModelInfo(TypedDict, total=False):
-    """
-    Model info for a given model, this is information found in litellm.model_prices_and_context_window.json
-    """
-
+class ModelInfoBase(TypedDict, total=False):
     key: Required[str]  # the key in litellm.model_cost which is returned
 
     max_tokens: Required[Optional[int]]
@@ -119,7 +115,6 @@ class ModelInfo(TypedDict, total=False):
             "completion", "embedding", "image_generation", "chat", "audio_transcription"
         ]
     ]
-    supported_openai_params: Required[Optional[List[str]]]
     supports_system_messages: Optional[bool]
     supports_response_schema: Optional[bool]
     supports_vision: Optional[bool]
@@ -127,10 +122,19 @@ class ModelInfo(TypedDict, total=False):
     supports_assistant_prefill: Optional[bool]
     supports_prompt_caching: Optional[bool]
     supports_audio_input: Optional[bool]
+    supports_embedding_image_input: Optional[bool]
     supports_audio_output: Optional[bool]
     supports_pdf_input: Optional[bool]
     tpm: Optional[int]
     rpm: Optional[int]
+
+
+class ModelInfo(ModelInfoBase, total=False):
+    """
+    Model info for a given model, this is information found in litellm.model_prices_and_context_window.json
+    """
+
+    supported_openai_params: Required[Optional[List[str]]]
 
 
 class GenericStreamingChunk(TypedDict, total=False):
@@ -166,6 +170,8 @@ class CallTypes(Enum):
     rerank = "rerank"
     arerank = "arerank"
     arealtime = "_arealtime"
+    create_batch = "create_batch"
+    acreate_batch = "acreate_batch"
     pass_through = "pass_through_endpoint"
 
 
@@ -187,6 +193,9 @@ CallTypesLiteral = Literal[
     "rerank",
     "arerank",
     "_arealtime",
+    "create_batch",
+    "acreate_batch",
+    "pass_through_endpoint",
 ]
 
 
@@ -805,6 +814,8 @@ class ModelResponseStream(ModelResponseBase):
     def __init__(
         self,
         choices: Optional[List[Union[StreamingChoices, dict, BaseModel]]] = None,
+        id: Optional[str] = None,
+        created: Optional[int] = None,
         **kwargs,
     ):
         if choices is not None and isinstance(choices, list):
@@ -821,6 +832,20 @@ class ModelResponseStream(ModelResponseBase):
             kwargs["choices"] = new_choices
         else:
             kwargs["choices"] = [StreamingChoices()]
+
+        if id is None:
+            id = _generate_id()
+        else:
+            id = id
+        if created is None:
+            created = int(time.time())
+        else:
+            created = created
+
+        kwargs["id"] = id
+        kwargs["created"] = created
+        kwargs["object"] = "chat.completion.chunk"
+
         super().__init__(**kwargs)
 
     def __contains__(self, key):
@@ -1358,85 +1383,6 @@ class ResponseFormatChunk(TypedDict, total=False):
     response_schema: dict
 
 
-all_litellm_params = [
-    "metadata",
-    "litellm_trace_id",
-    "tags",
-    "acompletion",
-    "aimg_generation",
-    "atext_completion",
-    "text_completion",
-    "caching",
-    "mock_response",
-    "api_key",
-    "api_version",
-    "api_base",
-    "force_timeout",
-    "logger_fn",
-    "verbose",
-    "custom_llm_provider",
-    "litellm_logging_obj",
-    "litellm_call_id",
-    "use_client",
-    "id",
-    "fallbacks",
-    "azure",
-    "headers",
-    "model_list",
-    "num_retries",
-    "context_window_fallback_dict",
-    "retry_policy",
-    "retry_strategy",
-    "roles",
-    "final_prompt_value",
-    "bos_token",
-    "eos_token",
-    "request_timeout",
-    "complete_response",
-    "self",
-    "client",
-    "rpm",
-    "tpm",
-    "max_parallel_requests",
-    "input_cost_per_token",
-    "output_cost_per_token",
-    "input_cost_per_second",
-    "output_cost_per_second",
-    "hf_model_name",
-    "model_info",
-    "proxy_server_request",
-    "preset_cache_key",
-    "caching_groups",
-    "ttl",
-    "cache",
-    "no-log",
-    "base_model",
-    "stream_timeout",
-    "supports_system_message",
-    "region_name",
-    "allowed_model_region",
-    "model_config",
-    "fastest_response",
-    "cooldown_time",
-    "cache_key",
-    "max_retries",
-    "azure_ad_token_provider",
-    "tenant_id",
-    "client_id",
-    "client_secret",
-    "user_continue_message",
-    "configurable_clientside_auth_params",
-    "weight",
-    "ensure_alternating_roles",
-    "assistant_continue_message",
-    "user_continue_message",
-    "fallback_depth",
-    "max_fallbacks",
-    "max_budget",
-    "budget_duration",
-]
-
-
 class LoggedLiteLLMParams(TypedDict, total=False):
     force_timeout: Optional[float]
     custom_llm_provider: Optional[str]
@@ -1496,6 +1442,7 @@ class StandardLoggingUserAPIKeyMetadata(TypedDict):
     user_api_key_team_id: Optional[str]
     user_api_key_user_id: Optional[str]
     user_api_key_team_alias: Optional[str]
+    user_api_key_end_user_id: Optional[str]
 
 
 class StandardLoggingMetadata(StandardLoggingUserAPIKeyMetadata):
@@ -1560,11 +1507,13 @@ class StandardLoggingPayload(TypedDict):
     id: str
     trace_id: str  # Trace multiple LLM calls belonging to same overall request (e.g. fallbacks/retries)
     call_type: str
+    stream: Optional[bool]
     response_cost: float
     response_cost_failure_debug_info: Optional[
         StandardLoggingModelCostFailureDebugInformation
     ]
     status: StandardLoggingPayloadStatus
+    custom_llm_provider: Optional[str]
     total_tokens: int
     prompt_tokens: int
     completion_tokens: int
@@ -1643,6 +1592,89 @@ class StandardCallbackDynamicParams(TypedDict, total=False):
     turn_off_message_logging: Optional[bool]  # when true will not log messages
 
 
+all_litellm_params = [
+    "metadata",
+    "litellm_metadata",
+    "litellm_trace_id",
+    "tags",
+    "acompletion",
+    "aimg_generation",
+    "atext_completion",
+    "text_completion",
+    "caching",
+    "mock_response",
+    "mock_timeout",
+    "api_key",
+    "api_version",
+    "prompt_id",
+    "prompt_variables",
+    "api_base",
+    "force_timeout",
+    "logger_fn",
+    "verbose",
+    "custom_llm_provider",
+    "litellm_logging_obj",
+    "litellm_call_id",
+    "use_client",
+    "id",
+    "fallbacks",
+    "azure",
+    "headers",
+    "model_list",
+    "num_retries",
+    "context_window_fallback_dict",
+    "retry_policy",
+    "retry_strategy",
+    "roles",
+    "final_prompt_value",
+    "bos_token",
+    "eos_token",
+    "request_timeout",
+    "complete_response",
+    "self",
+    "client",
+    "rpm",
+    "tpm",
+    "max_parallel_requests",
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "input_cost_per_second",
+    "output_cost_per_second",
+    "hf_model_name",
+    "model_info",
+    "proxy_server_request",
+    "preset_cache_key",
+    "caching_groups",
+    "ttl",
+    "cache",
+    "no-log",
+    "base_model",
+    "stream_timeout",
+    "supports_system_message",
+    "region_name",
+    "allowed_model_region",
+    "model_config",
+    "fastest_response",
+    "cooldown_time",
+    "cache_key",
+    "max_retries",
+    "azure_ad_token_provider",
+    "tenant_id",
+    "client_id",
+    "client_secret",
+    "user_continue_message",
+    "configurable_clientside_auth_params",
+    "weight",
+    "ensure_alternating_roles",
+    "assistant_continue_message",
+    "user_continue_message",
+    "fallback_depth",
+    "max_fallbacks",
+    "max_budget",
+    "budget_duration",
+] + list(StandardCallbackDynamicParams.__annotations__.keys())
+
+
 class KeyGenerationConfig(TypedDict, total=False):
     required_params: List[
         str
@@ -1663,8 +1695,24 @@ class StandardKeyGenerationConfig(TypedDict, total=False):
 
 
 class BudgetConfig(BaseModel):
-    max_budget: float
-    budget_duration: str
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    tpm_limit: Optional[int] = None
+    rpm_limit: Optional[int] = None
+
+    def __init__(self, **data: Any) -> None:
+        # Map time_period to budget_duration if present
+        if "time_period" in data:
+            data["budget_duration"] = data.pop("time_period")
+
+        # Map budget_limit to max_budget if present
+        if "budget_limit" in data:
+            data["max_budget"] = data.pop("budget_limit")
+
+        super().__init__(**data)
+
+
+GenericBudgetConfigType = Dict[str, BudgetConfig]
 
 
 class LlmProviders(str, Enum):
@@ -1730,6 +1778,7 @@ class LlmProviders(str, Enum):
     HOSTED_VLLM = "hosted_vllm"
     LM_STUDIO = "lm_studio"
     GALADRIEL = "galadriel"
+    INFINITY = "infinity"
 
 
 class LiteLLMLoggingBaseClass:

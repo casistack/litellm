@@ -1,4 +1,3 @@
-import types
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 import httpx
@@ -13,7 +12,7 @@ from litellm.litellm_core_utils.prompt_templates.factory import (
 )
 from litellm.llms.base_llm.chat.transformation import BaseConfig, BaseLLMException
 from litellm.types.llms.openai import AllMessageValues
-from litellm.types.utils import Choices, Message, ModelResponse, Usage
+from litellm.types.utils import ModelResponse, Usage
 from litellm.utils import token_counter
 
 from ..common_utils import ReplicateError
@@ -130,11 +129,6 @@ class ReplicateConfig(BaseConfig):
             return split_model[1]
         return model
 
-    def _transform_messages(
-        self, messages: List[AllMessageValues]
-    ) -> List[AllMessageValues]:
-        return messages
-
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
     ) -> BaseLLMException:
@@ -142,7 +136,13 @@ class ReplicateConfig(BaseConfig):
             status_code=status_code, message=error_message, headers=headers
         )
 
-    def get_complete_url(self, api_base: str, model: str) -> str:
+    def get_complete_url(
+        self,
+        api_base: str,
+        model: str,
+        optional_params: dict,
+        stream: Optional[bool] = None,
+    ) -> str:
         version_id = self.model_to_version_id(model)
         base_url = api_base
         if "deployments" in version_id:

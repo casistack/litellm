@@ -1,11 +1,6 @@
 ## Uses the huggingface text generation inference API
-import copy
-import enum
 import json
 import os
-import time
-import types
-from enum import Enum
 from typing import (
     Any,
     Callable,
@@ -33,15 +28,13 @@ from litellm.llms.custom_httpx.http_handler import (
 from litellm.llms.huggingface.chat.transformation import (
     HuggingfaceChatConfig as HuggingfaceConfig,
 )
-from litellm.secret_managers.main import get_secret_str
-from litellm.types.completion import ChatCompletionMessageToolCallParam
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.utils import EmbeddingResponse
 from litellm.types.utils import Logprobs as TextCompletionLogprobs
-from litellm.types.utils import ModelResponse, Usage
+from litellm.types.utils import ModelResponse
 
 from ...base import BaseLLM
-from ..common_utils import HuggingfaceError, hf_task_list, hf_tasks
+from ..common_utils import HuggingfaceError
 
 hf_chat_config = HuggingfaceConfig()
 
@@ -210,7 +203,26 @@ class Huggingface(BaseLLM):
                     return self.async_streaming(logging_obj=logging_obj, api_base=completion_url, data=data, headers=headers, model_response=model_response, model=model, timeout=timeout, messages=messages)  # type: ignore
                 else:
                     ### ASYNC COMPLETION
-                    return self.acompletion(api_base=completion_url, data=data, headers=headers, model_response=model_response, task=task, encoding=encoding, model=model, optional_params=optional_params, timeout=timeout, litellm_params=litellm_params)  # type: ignore
+                    return self.acompletion(
+                        api_base=completion_url,
+                        data=data,
+                        headers=headers,
+                        model_response=model_response,
+                        encoding=encoding,
+                        model=model,
+                        optional_params=optional_params,
+                        timeout=timeout,
+                        litellm_params=litellm_params,
+                        logging_obj=logging_obj,
+                        api_key=api_key,
+                        messages=messages,
+                        client=(
+                            client
+                            if client is not None
+                            and isinstance(client, AsyncHTTPHandler)
+                            else None
+                        ),
+                    )
             if client is None or not isinstance(client, HTTPHandler):
                 client = _get_httpx_client()
             ### SYNC STREAMING
@@ -274,14 +286,16 @@ class Huggingface(BaseLLM):
         logging_obj: LiteLLMLoggingObj,
         api_key: str,
         messages: List[AllMessageValues],
+        client: Optional[AsyncHTTPHandler] = None,
     ):
         response: Optional[httpx.Response] = None
         try:
-            http_client = get_async_httpx_client(
-                llm_provider=litellm.LlmProviders.HUGGINGFACE
-            )
+            if client is None:
+                client = get_async_httpx_client(
+                    llm_provider=litellm.LlmProviders.HUGGINGFACE
+                )
             ### ASYNC COMPLETION
-            http_response = await http_client.post(
+            http_response = await client.post(
                 url=api_base, headers=headers, data=json.dumps(data), timeout=timeout
             )
 

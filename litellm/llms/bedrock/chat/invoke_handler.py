@@ -4,12 +4,10 @@ Manages calling Bedrock's `/converse` API + `/invoke` API
 
 import copy
 import json
-import os
 import time
 import types
 import urllib.parse
 import uuid
-from enum import Enum
 from functools import partial
 from typing import (
     Any,
@@ -17,11 +15,10 @@ from typing import (
     Callable,
     Iterator,
     List,
-    Literal,
     Optional,
     Tuple,
-    TypedDict,
     Union,
+    cast,
 )
 
 import httpx  # type: ignore
@@ -32,8 +29,6 @@ from litellm.caching.caching import InMemoryCache
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.litellm_core_utils.prompt_templates.factory import (
-    _bedrock_converse_messages_pt,
-    _bedrock_tools_pt,
     cohere_message_pt,
     construct_tool_use_system_prompt,
     contains_tag,
@@ -50,22 +45,17 @@ from litellm.llms.custom_httpx.http_handler import (
 )
 from litellm.types.llms.bedrock import *
 from litellm.types.llms.openai import (
-    ChatCompletionResponseMessage,
     ChatCompletionToolCallChunk,
     ChatCompletionToolCallFunctionChunk,
-    ChatCompletionToolChoiceFunctionParam,
-    ChatCompletionToolChoiceObjectParam,
-    ChatCompletionToolParam,
-    ChatCompletionToolParamFunctionChunk,
     ChatCompletionUsageBlock,
 )
+from litellm.types.utils import ChatCompletionMessageToolCall, Choices
 from litellm.types.utils import GenericStreamingChunk as GChunk
 from litellm.types.utils import ModelResponse, Usage
 from litellm.utils import CustomStreamWrapper, get_secret
 
 from ..base_aws_llm import BaseAWSLLM
 from ..common_utils import BedrockError, ModelResponseIterator, get_bedrock_tool_name
-from .converse_transformation import AmazonConverseConfig
 
 _response_stream_shape_cache = None
 bedrock_tool_name_mappings: InMemoryCache = InMemoryCache(
@@ -597,7 +587,6 @@ class BedrockLLM(BaseAWSLLM):
         client: Optional[Union[AsyncHTTPHandler, HTTPHandler]] = None,
     ) -> Union[ModelResponse, CustomStreamWrapper]:
         try:
-            import boto3
             from botocore.auth import SigV4Auth
             from botocore.awsrequest import AWSRequest
             from botocore.credentials import Credentials
@@ -814,7 +803,7 @@ class BedrockLLM(BaseAWSLLM):
             )
             raise BedrockError(
                 status_code=404,
-                message="Bedrock HTTPX: Unknown provider={}, model={}".format(
+                message="Bedrock Invoke HTTPX: Unknown provider={}, model={}. Try calling via converse route - `bedrock/converse/<model>`.".format(
                     provider, model
                 ),
             )
@@ -1317,10 +1306,24 @@ class MockResponseIterator:  # for returning ai21 streaming responses
             chunk_usage: Usage = getattr(chunk_data, "usage")
             text = chunk_data.choices[0].message.content or ""  # type: ignore
             tool_use = None
+            _model_response_tool_call = cast(
+                Optional[List[ChatCompletionMessageToolCall]],
+                cast(Choices, chunk_data.choices[0]).message.tool_calls,
+            )
             if self.json_mode is True:
                 text, tool_use = self._handle_json_mode_chunk(
                     text=text,
                     tool_calls=chunk_data.choices[0].message.tool_calls,  # type: ignore
+                )
+            elif _model_response_tool_call is not None:
+                tool_use = ChatCompletionToolCallChunk(
+                    id=_model_response_tool_call[0].id,
+                    type="function",
+                    function=ChatCompletionToolCallFunctionChunk(
+                        name=_model_response_tool_call[0].function.name,
+                        arguments=_model_response_tool_call[0].function.arguments,
+                    ),
+                    index=0,
                 )
             processed_chunk = GChunk(
                 text=text,

@@ -51,7 +51,7 @@ const sidebars = {
         {
           type: "category",
           label: "Architecture",
-          items: ["proxy/architecture", "proxy/db_info", "router_architecture"],
+          items: ["proxy/architecture", "proxy/db_info", "router_architecture", "proxy/user_management_heirarchy"],
         }, 
         {
           type: "link",
@@ -85,6 +85,7 @@ const sidebars = {
           label: "Admin UI",
           items: [
             "proxy/ui", 
+            "proxy/admin_ui_sso",
             "proxy/self_serve", 
             "proxy/custom_sso"
           ],
@@ -98,8 +99,13 @@ const sidebars = {
         },
         {
           type: "category",
-          label: "Spend Tracking + Budgets",
-          items: ["proxy/cost_tracking", "proxy/users", "proxy/custom_pricing", "proxy/team_budgets", "proxy/billing", "proxy/customers"],
+          label: "Spend Tracking",
+          items: ["proxy/cost_tracking", "proxy/custom_pricing", "proxy/billing",],
+        },
+        {
+          type: "category",
+          label: "Budgets + Rate Limits",
+          items: ["proxy/users", "proxy/rate_limit_tiers", "proxy/team_budgets", "proxy/customers"],
         },
         {
           type: "link",
@@ -134,10 +140,17 @@ const sidebars = {
             "oidc"
           ]
         },
-        "proxy/prompt_management",
+        {
+          type: "category",
+          label: "Create Custom Plugins",
+          description: "Modify requests, responses, and more",
+          items: [
+            "proxy/call_hooks",
+            "proxy/rules", 
+          ]
+        },
         "proxy/caching",
-        "proxy/call_hooks",
-        "proxy/rules", 
+        
       ]
     },
     {
@@ -186,6 +199,7 @@ const sidebars = {
         "providers/fireworks_ai",
         "providers/clarifai", 
         "providers/vllm", 
+        "providers/infinity",
         "providers/xinference", 
         "providers/cloudflare_workers", 
         "providers/deepinfra",
@@ -226,6 +240,7 @@ const sidebars = {
         "completion/batching",
         "completion/mock_requests",
         "completion/reliable_completions",
+        'tutorials/litellm_proxy_aporia',
         
       ]
     },
@@ -273,6 +288,7 @@ const sidebars = {
         },
         "rerank",
         "assistants",
+        "files_endpoints",
         "batches",
         "realtime",
         "fine_tuning",
@@ -288,7 +304,7 @@ const sidebars = {
         description: "Learn how to load balance, route, and set fallbacks for your LLM requests",
         slug: "/routing-load-balancing",
       },
-      items: ["routing", "scheduler", "proxy/load_balancing", "proxy/reliability", "proxy/tag_routing", "proxy/provider_budget_routing", "proxy/team_based_routing", "proxy/customer_routing", "wildcard_routing"],
+      items: ["routing", "scheduler", "proxy/load_balancing", "proxy/reliability", "proxy/timeout", "proxy/tag_routing", "proxy/provider_budget_routing",  "wildcard_routing"],
     },
     {
       type: "category",
@@ -307,7 +323,28 @@ const sidebars = {
           label: "LangChain, LlamaIndex, Instructor Integration",
           items: ["langchain/langchain", "tutorials/instructor"],
         },
+        {
+          type: "category",
+          label: "Tutorials",
+          items: [
+            
+            'tutorials/azure_openai',
+            'tutorials/instructor',
+            "tutorials/gradio_integration",
+            "tutorials/huggingface_codellama",
+            "tutorials/huggingface_tutorial",
+            "tutorials/TogetherAI_liteLLM",
+            "tutorials/finetuned_chat_gpt",
+            "tutorials/text_completion",
+            "tutorials/first_playground",
+            "tutorials/model_fallbacks",
+          ],
+        },
       ],
+    },
+    {
+      type: "doc",
+      id: "proxy/prompt_management"
     },
     {
       type: "category",
@@ -319,6 +356,13 @@ const sidebars = {
         "load_test_sdk",
         "load_test_rpm",
       ]
+    },
+    {
+      type: "category",
+      label: "Adding Providers",
+      items: [
+        "adding_provider/directory_structure", 
+        "adding_provider/new_rerank_provider"],
     },
     {
       type: "category",
@@ -353,23 +397,7 @@ const sidebars = {
         "observability/opik_integration",
       ],
     },
-    {
-      type: "category",
-      label: "Tutorials",
-      items: [
-        'tutorials/litellm_proxy_aporia',
-        'tutorials/azure_openai',
-        'tutorials/instructor',
-        "tutorials/gradio_integration",
-        "tutorials/huggingface_codellama",
-        "tutorials/huggingface_tutorial",
-        "tutorials/TogetherAI_liteLLM",
-        "tutorials/finetuned_chat_gpt",
-        "tutorials/text_completion",
-        "tutorials/first_playground",
-        "tutorials/model_fallbacks",
-      ],
-    },
+    
     {
       type: "category",
       label: "Extras",
@@ -381,6 +409,8 @@ const sidebars = {
         "proxy/pii_masking",
         "extras/code_quality",
         "rules",
+        "proxy/team_based_routing", 
+        "proxy/customer_routing",
         "proxy_server",
         {
           type: "category",

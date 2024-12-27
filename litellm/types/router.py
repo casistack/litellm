@@ -647,14 +647,6 @@ class RoutingStrategy(enum.Enum):
     PROVIDER_BUDGET_LIMITING = "provider-budget-routing"
 
 
-class GenericBudgetInfo(BaseModel):
-    time_period: str  # e.g., '1d', '30d'
-    budget_limit: float
-
-
-GenericBudgetConfigType = Dict[str, GenericBudgetInfo]
-
-
 class RouterCacheEnum(enum.Enum):
     TPM = "global_router:{id}:{model}:tpm:{current_minute}"
     RPM = "global_router:{id}:{model}:rpm:{current_minute}"
@@ -667,3 +659,6 @@ class GenericBudgetWindowDetails(BaseModel):
     spend_key: str
     start_time_key: str
     ttl_seconds: int
+
+
+OptionalPreCallChecks = List[Literal["prompt_caching", "router_budget_limiting"]]

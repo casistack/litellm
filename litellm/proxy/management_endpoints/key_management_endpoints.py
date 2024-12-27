@@ -12,7 +12,6 @@ All /key management endpoints
 import asyncio
 import copy
 import json
-import re
 import secrets
 import traceback
 import uuid
@@ -40,7 +39,11 @@ from litellm.proxy.utils import (
     handle_exception_on_proxy,
 )
 from litellm.secret_managers.main import get_secret
-from litellm.types.utils import PersonalUIKeyGenerationConfig, TeamUIKeyGenerationConfig
+from litellm.types.utils import (
+    BudgetConfig,
+    PersonalUIKeyGenerationConfig,
+    TeamUIKeyGenerationConfig,
+)
 
 
 def _is_team_key(data: GenerateKeyRequest):
@@ -235,6 +238,7 @@ async def generate_key_fn(  # noqa: PLR0915
     - key: Optional[str] - User defined key value. If not set, a 16-digit unique sk-key is created for you.
     - team_id: Optional[str] - The team id of the key
     - user_id: Optional[str] - The user id of the key
+    - budget_id: Optional[str] - The budget id associated with the key. Created by calling `/budget/new`.
     - models: Optional[list] - Model_name's a user is allowed to call. (if empty, key is allowed to call all models)
     - aliases: Optional[dict] - Any alias mappings, on top of anything in the config.yaml model list. - https://docs.litellm.ai/docs/proxy/virtual_keys#managing-auth---upgradedowngrade-models
     - config: Optional[dict] - any key-specific configs, overrides config in config.yaml
@@ -246,7 +250,7 @@ async def generate_key_fn(  # noqa: PLR0915
     - metadata: Optional[dict] - Metadata for key, store information for key. Example metadata = {"team": "core-infra", "app": "app2", "email": "ishaan@berri.ai" }
     - guardrails: Optional[List[str]] - List of active guardrails for the key
     - permissions: Optional[dict] - key-specific permissions. Currently just used for turning off pii masking (if connected). Example - {"pii": false}
-    - model_max_budget: Optional[dict] - key-specific model budget in USD. Example - {"text-davinci-002": 0.5, "gpt-3.5-turbo": 0.5}. IF null or {} then no model specific budget.
+    - model_max_budget: Optional[Dict[str, BudgetConfig]] - Model-specific budgets {"gpt-4": {"budget_limit": 0.0005, "time_period": "30d"}}}. IF null or {} then no model specific budget.
     - model_rpm_limit: Optional[dict] - key-specific model rpm limit. Example - {"text-davinci-002": 1000, "gpt-3.5-turbo": 1000}. IF null or {} then no model specific rpm limit.
     - model_tpm_limit: Optional[dict] - key-specific model tpm limit. Example - {"text-davinci-002": 1000, "gpt-3.5-turbo": 1000}. IF null or {} then no model specific tpm limit.
     - allowed_cache_controls: Optional[list] - List of allowed cache control values. Example - ["no-cache", "no-store"]. See all values - https://docs.litellm.ai/docs/proxy/caching#turn-on--off-caching-per-request
@@ -277,11 +281,8 @@ async def generate_key_fn(  # noqa: PLR0915
     """
     try:
         from litellm.proxy.proxy_server import (
-            create_audit_log_for_update,
-            general_settings,
             litellm_proxy_admin_name,
             prisma_client,
-            proxy_logging_obj,
             user_api_key_cache,
             user_custom_key_generate,
         )
@@ -376,7 +377,7 @@ async def generate_key_fn(  # noqa: PLR0915
                                 )
 
         # TODO: @ishaan-jaff: Migrate all budget tracking to use LiteLLM_BudgetTable
-        _budget_id = None
+        _budget_id = data.budget_id
         if prisma_client is not None and data.soft_budget is not None:
             # create the Budget Row for the LiteLLM Verification Token
             budget_row = LiteLLM_BudgetTable(
@@ -515,6 +516,10 @@ def prepare_key_update_data(
 
     _metadata = existing_key_row.metadata or {}
 
+    # validate model_max_budget
+    if "model_max_budget" in non_default_values:
+        validate_model_max_budget(non_default_values["model_max_budget"])
+
     non_default_values = prepare_metadata_fields(
         data=data, non_default_values=non_default_values, existing_metadata=_metadata
     )
@@ -543,14 +548,15 @@ async def update_key_fn(
     - key_alias: Optional[str] - User-friendly key alias
     - user_id: Optional[str] - User ID associated with key
     - team_id: Optional[str] - Team ID associated with key
+    - budget_id: Optional[str] - The budget id associated with the key. Created by calling `/budget/new`.
     - models: Optional[list] - Model_name's a user is allowed to call
     - tags: Optional[List[str]] - Tags for organizing keys (Enterprise only)
     - enforced_params: Optional[List[str]] - List of enforced params for the key (Enterprise only). [Docs](https://docs.litellm.ai/docs/proxy/enterprise#enforce-required-params-for-llm-requests)
     - spend: Optional[float] - Amount spent by key
     - max_budget: Optional[float] - Max budget for key
-    - model_max_budget: Optional[dict] - Model-specific budgets {"gpt-4": 0.5, "claude-v1": 1.0}
+    - model_max_budget: Optional[Dict[str, BudgetConfig]] - Model-specific budgets {"gpt-4": {"budget_limit": 0.0005, "time_period": "30d"}}
     - budget_duration: Optional[str] - Budget reset period ("30d", "1h", etc.)
-    - soft_budget: Optional[float] - Soft budget limit (warning vs. hard stop). Will trigger a slack alert when this soft budget is reached.
+    - soft_budget: Optional[float] - [TODO] Soft budget limit (warning vs. hard stop). Will trigger a slack alert when this soft budget is reached.
     - max_parallel_requests: Optional[int] - Rate limit for parallel requests
     - metadata: Optional[dict] - Metadata for key. Example {"team": "core-infra", "app": "app2"}
     - tpm_limit: Optional[int] - Tokens per minute limit
@@ -582,15 +588,13 @@ async def update_key_fn(
     ```
     """
     from litellm.proxy.proxy_server import (
-        create_audit_log_for_update,
-        litellm_proxy_admin_name,
         prisma_client,
         proxy_logging_obj,
         user_api_key_cache,
     )
 
     try:
-        data_json: dict = data.model_dump(exclude_unset=True)
+        data_json: dict = data.model_dump(exclude_unset=True, exclude_none=True)
         key = data_json.pop("key")
         # get the row from db
         if prisma_client is None:
@@ -701,15 +705,7 @@ async def delete_key_fn(
         HTTPException: If an error occurs during key deletion.
     """
     try:
-        from litellm.proxy.proxy_server import (
-            create_audit_log_for_update,
-            general_settings,
-            litellm_proxy_admin_name,
-            prisma_client,
-            proxy_logging_obj,
-            user_api_key_cache,
-            user_custom_key_generate,
-        )
+        from litellm.proxy.proxy_server import prisma_client, user_api_key_cache
 
         if prisma_client is None:
             raise Exception("Not connected to DB!")
@@ -810,14 +806,7 @@ async def info_key_fn_v2(
     -d {"keys": ["sk-1", "sk-2", "sk-3"]}
     ```
     """
-    from litellm.proxy.proxy_server import (
-        create_audit_log_for_update,
-        general_settings,
-        litellm_proxy_admin_name,
-        prisma_client,
-        proxy_logging_obj,
-        user_custom_key_generate,
-    )
+    from litellm.proxy.proxy_server import prisma_client
 
     try:
         if prisma_client is None:
@@ -881,14 +870,7 @@ async def info_key_fn(
 -H "Authorization: Bearer sk-02Wr4IAlN3NvPXvL5JVvDA"
     ```
     """
-    from litellm.proxy.proxy_server import (
-        create_audit_log_for_update,
-        general_settings,
-        litellm_proxy_admin_name,
-        prisma_client,
-        proxy_logging_obj,
-        user_custom_key_generate,
-    )
+    from litellm.proxy.proxy_server import prisma_client
 
     try:
         if prisma_client is None:
@@ -1035,6 +1017,7 @@ async def generate_key_helper_fn(  # noqa: PLR0915
         metadata["guardrails"] = guardrails
 
     metadata_json = json.dumps(metadata)
+    validate_model_max_budget(model_max_budget)
     model_max_budget_json = json.dumps(model_max_budget)
     user_role = user_role
     tpm_limit = tpm_limit
@@ -1154,6 +1137,9 @@ async def generate_key_helper_fn(  # noqa: PLR0915
                 data=key_data, table_name="key"
             )
             key_data["token_id"] = getattr(create_key_response, "token", None)
+            key_data["litellm_budget_table"] = getattr(
+                create_key_response, "litellm_budget_table", None
+            )
     except Exception as e:
         verbose_proxy_logger.error(
             "litellm.proxy.proxy_server.generate_key_helper_fn(): Exception occured - {}".format(
@@ -1266,7 +1252,7 @@ async def regenerate_key_fn(
         - tags: Optional[List[str]] - Tags for organizing keys (Enterprise only)
         - spend: Optional[float] - Amount spent by key
         - max_budget: Optional[float] - Max budget for key
-        - model_max_budget: Optional[dict] - Model-specific budgets {"gpt-4": 0.5, "claude-v1": 1.0}
+        - model_max_budget: Optional[Dict[str, BudgetConfig]] - Model-specific budgets {"gpt-4": {"budget_limit": 0.0005, "time_period": "30d"}}
         - budget_duration: Optional[str] - Budget reset period ("30d", "1h", etc.)
         - soft_budget: Optional[float] - Soft budget limit (warning vs. hard stop). Will trigger a slack alert when this soft budget is reached.
         - max_parallel_requests: Optional[int] - Rate limit for parallel requests
@@ -1293,8 +1279,7 @@ async def regenerate_key_fn(
     --data-raw '{
         "max_budget": 100,
         "metadata": {"team": "core-infra"},
-        "models": ["gpt-4", "gpt-3.5-turbo"],
-        "model_max_budget": {"gpt-4": 50, "gpt-3.5-turbo": 50}
+        "models": ["gpt-4", "gpt-3.5-turbo"]
     }'
     ```
 
@@ -1949,3 +1934,35 @@ async def _enforce_unique_key_alias(
                 param="key_alias",
                 code=status.HTTP_400_BAD_REQUEST,
             )
+
+
+def validate_model_max_budget(model_max_budget: Optional[Dict]) -> None:
+    """
+    Validate the model_max_budget is GenericBudgetConfigType + enforce user has an enterprise license
+
+    Raises:
+        Exception: If model_max_budget is not a valid GenericBudgetConfigType
+    """
+    try:
+        if model_max_budget is None:
+            return
+        if len(model_max_budget) == 0:
+            return
+        if model_max_budget is not None:
+            from litellm.proxy.proxy_server import CommonProxyErrors, premium_user
+
+            if premium_user is not True:
+                raise ValueError(
+                    f"You must have an enterprise license to set model_max_budget. {CommonProxyErrors.not_premium_user.value}"
+                )
+            for _model, _budget_info in model_max_budget.items():
+                assert isinstance(_model, str)
+
+                # /CRUD endpoints can pass budget_limit as a string, so we need to convert it to a float
+                if "budget_limit" in _budget_info:
+                    _budget_info["budget_limit"] = float(_budget_info["budget_limit"])
+                BudgetConfig(**_budget_info)
+    except Exception as e:
+        raise ValueError(
+            f"Invalid model_max_budget: {str(e)}. Example of valid model_max_budget: https://docs.litellm.ai/docs/proxy/users"
+        )

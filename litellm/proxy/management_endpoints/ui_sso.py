@@ -8,7 +8,7 @@ Has all /sso/* routes
 import asyncio
 import os
 import uuid
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -53,7 +53,7 @@ async def google_login(request: Request):  # noqa: PLR0915
     PROXY_BASE_URL should be the your deployed proxy endpoint, e.g. PROXY_BASE_URL="https://litellm-production-7002.up.railway.app/"
     Example:
     """
-    from litellm.proxy.proxy_server import master_key, premium_user, prisma_client
+    from litellm.proxy.proxy_server import premium_user
 
     microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID", None)
     google_client_id = os.getenv("GOOGLE_CLIENT_ID", None)
@@ -447,9 +447,9 @@ async def auth_callback(request: Request):  # noqa: PLR0915
 
     # User might not be already created on first generation of key
     # But if it is, we want their models preferences
-    default_ui_key_values = {
+    default_ui_key_values: Dict[str, Any] = {
         "duration": "24hr",
-        "key_max_budget": 0.01,
+        "key_max_budget": litellm.max_ui_session_budget,
         "aliases": {},
         "config": {},
         "spend": 0,
