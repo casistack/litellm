@@ -67,6 +67,7 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import (
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.realtime_api.main import _realtime_health_check
 from litellm.secret_managers.main import get_secret_str
+from litellm.types.router import GenericLiteLLMParams
 from litellm.utils import (
     CustomStreamWrapper,
     Usage,
@@ -87,6 +88,7 @@ from litellm.utils import (
     supports_httpx_timeout,
     token_counter,
     validate_chat_completion_messages,
+    validate_chat_completion_tool_choice,
 )
 
 from ._logging import verbose_logger
@@ -113,6 +115,7 @@ from .llms.bedrock.embed.embedding import BedrockEmbedding
 from .llms.bedrock.image.image_handler import BedrockImageGeneration
 from .llms.codestral.completion.handler import CodestralTextCompletion
 from .llms.cohere.embed import handler as cohere_embed
+from .llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
 from .llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from .llms.custom_llm import CustomLLM, custom_chat_llm_router
 from .llms.databricks.chat.handler import DatabricksChatCompletion
@@ -215,6 +218,7 @@ openai_like_embedding = OpenAILikeEmbeddingHandler()
 openai_like_chat_completion = OpenAILikeChatHandler()
 databricks_embedding = DatabricksEmbeddingHandler()
 base_llm_http_handler = BaseLLMHTTPHandler()
+base_llm_aiohttp_handler = BaseLLMAIOHTTPHandler()
 sagemaker_chat_completion = SagemakerChatHandler()
 ####### COMPLETION ENDPOINTS ################
 
@@ -431,73 +435,26 @@ async def acompletion(
         ctx = contextvars.copy_context()
         func_with_context = partial(ctx.run, func)
 
-        if (
-            custom_llm_provider == "openai"
-            or custom_llm_provider == "azure"
-            or custom_llm_provider == "azure_text"
-            or custom_llm_provider == "custom_openai"
-            or custom_llm_provider == "anyscale"
-            or custom_llm_provider == "mistral"
-            or custom_llm_provider == "openrouter"
-            or custom_llm_provider == "deepinfra"
-            or custom_llm_provider == "perplexity"
-            or custom_llm_provider == "groq"
-            or custom_llm_provider == "nvidia_nim"
-            or custom_llm_provider == "cohere_chat"
-            or custom_llm_provider == "cohere"
-            or custom_llm_provider == "cerebras"
-            or custom_llm_provider == "sambanova"
-            or custom_llm_provider == "ai21_chat"
-            or custom_llm_provider == "ai21"
-            or custom_llm_provider == "volcengine"
-            or custom_llm_provider == "codestral"
-            or custom_llm_provider == "text-completion-codestral"
-            or custom_llm_provider == "deepseek"
-            or custom_llm_provider == "text-completion-openai"
-            or custom_llm_provider == "huggingface"
-            or custom_llm_provider == "ollama"
-            or custom_llm_provider == "ollama_chat"
-            or custom_llm_provider == "replicate"
-            or custom_llm_provider == "vertex_ai"
-            or custom_llm_provider == "vertex_ai_beta"
-            or custom_llm_provider == "gemini"
-            or custom_llm_provider == "sagemaker"
-            or custom_llm_provider == "sagemaker_chat"
-            or custom_llm_provider == "anthropic"
-            or custom_llm_provider == "anthropic_text"
-            or custom_llm_provider == "predibase"
-            or custom_llm_provider == "bedrock"
-            or custom_llm_provider == "databricks"
-            or custom_llm_provider == "triton"
-            or custom_llm_provider == "clarifai"
-            or custom_llm_provider == "watsonx"
-            or custom_llm_provider == "cloudflare"
-            or custom_llm_provider in litellm.openai_compatible_providers
-            or custom_llm_provider in litellm._custom_providers
-        ):  # currently implemented aiohttp calls for just azure, openai, hf, ollama, vertex ai soon all.
-            init_response = await loop.run_in_executor(None, func_with_context)
-            if isinstance(init_response, dict) or isinstance(
-                init_response, ModelResponse
-            ):  ## CACHING SCENARIO
-                if isinstance(init_response, dict):
-                    response = ModelResponse(**init_response)
-                response = init_response
-            elif asyncio.iscoroutine(init_response):
-                response = await init_response
-            else:
-                response = init_response  # type: ignore
-
-            if (
-                custom_llm_provider == "text-completion-openai"
-                or custom_llm_provider == "text-completion-codestral"
-            ) and isinstance(response, TextCompletionResponse):
-                response = litellm.OpenAITextCompletionConfig().convert_to_chat_model_response_object(
-                    response_object=response,
-                    model_response_object=litellm.ModelResponse(),
-                )
+        init_response = await loop.run_in_executor(None, func_with_context)
+        if isinstance(init_response, dict) or isinstance(
+            init_response, ModelResponse
+        ):  ## CACHING SCENARIO
+            if isinstance(init_response, dict):
+                response = ModelResponse(**init_response)
+            response = init_response
+        elif asyncio.iscoroutine(init_response):
+            response = await init_response
         else:
-            # Call the synchronous function using run_in_executor
-            response = await loop.run_in_executor(None, func_with_context)  # type: ignore
+            response = init_response  # type: ignore
+
+        if (
+            custom_llm_provider == "text-completion-openai"
+            or custom_llm_provider == "text-completion-codestral"
+        ) and isinstance(response, TextCompletionResponse):
+            response = litellm.OpenAITextCompletionConfig().convert_to_chat_model_response_object(
+                response_object=response,
+                model_response_object=litellm.ModelResponse(),
+            )
         if isinstance(response, CustomStreamWrapper):
             response.set_logging_event_loop(
                 loop=loop
@@ -846,6 +803,8 @@ def completion(  # type: ignore # noqa: PLR0915
         raise ValueError("model param not passed in.")
     # validate messages
     messages = validate_chat_completion_messages(messages=messages)
+    # validate tool_choice
+    tool_choice = validate_chat_completion_tool_choice(tool_choice=tool_choice)
     ######### unpacking kwargs #####################
     args = locals()
     api_base = kwargs.get("api_base", None)
@@ -922,44 +881,7 @@ def completion(  # type: ignore # noqa: PLR0915
         assistant_continue_message=assistant_continue_message,
     )
     ######## end of unpacking kwargs ###########
-    openai_params = [
-        "functions",
-        "function_call",
-        "temperature",
-        "temperature",
-        "top_p",
-        "n",
-        "stream",
-        "stream_options",
-        "stop",
-        "max_completion_tokens",
-        "modalities",
-        "prediction",
-        "audio",
-        "max_tokens",
-        "presence_penalty",
-        "frequency_penalty",
-        "logit_bias",
-        "user",
-        "request_timeout",
-        "api_base",
-        "api_version",
-        "api_key",
-        "deployment_id",
-        "organization",
-        "base_url",
-        "default_headers",
-        "timeout",
-        "response_format",
-        "seed",
-        "tools",
-        "tool_choice",
-        "max_retries",
-        "parallel_tool_calls",
-        "logprobs",
-        "top_logprobs",
-        "extra_headers",
-    ]
+    openai_params = litellm.OPENAI_CHAT_COMPLETION_PARAMS
     default_params = openai_params + all_litellm_params
     litellm_params = {}  # used to prevent unbound var errors
     non_default_params = {
@@ -1158,6 +1080,7 @@ def completion(  # type: ignore # noqa: PLR0915
             custom_prompt_dict=custom_prompt_dict,
             litellm_metadata=kwargs.get("litellm_metadata"),
             disable_add_transform_inline_image_block=disable_add_transform_inline_image_block,
+            drop_params=kwargs.get("drop_params"),
         )
         logging.update_environment_variables(
             model=model,
@@ -1224,10 +1147,7 @@ def completion(  # type: ignore # noqa: PLR0915
             if extra_headers is not None:
                 optional_params["extra_headers"] = extra_headers
 
-            if (
-                litellm.enable_preview_features
-                and litellm.AzureOpenAIO1Config().is_o1_model(model=model)
-            ):
+            if litellm.AzureOpenAIO1Config().is_o1_model(model=model):
                 ## LOAD CONFIG - if set
                 config = litellm.AzureOpenAIO1Config.get_config()
                 for k, v in config.items():
@@ -1243,7 +1163,6 @@ def completion(  # type: ignore # noqa: PLR0915
                     api_key=api_key,
                     api_base=api_base,
                     api_version=api_version,
-                    api_type=api_type,
                     dynamic_params=dynamic_params,
                     azure_ad_token=azure_ad_token,
                     model_response=model_response,
@@ -1255,6 +1174,7 @@ def completion(  # type: ignore # noqa: PLR0915
                     acompletion=acompletion,
                     timeout=timeout,  # type: ignore
                     client=client,  # pass AsyncAzureOpenAI, AzureOpenAI client
+                    custom_llm_provider=custom_llm_provider,
                 )
             else:
                 ## LOAD CONFIG - if set
@@ -1386,39 +1306,28 @@ def completion(  # type: ignore # noqa: PLR0915
             if extra_headers is not None:
                 optional_params["extra_headers"] = extra_headers
 
-            ## LOAD CONFIG - if set
-            config = litellm.AzureAIStudioConfig.get_config()
-            for k, v in config.items():
-                if (
-                    k not in optional_params
-                ):  # completion(top_k=3) > openai_config(top_k=3) <- allows for dynamic variables to be passed in
-                    optional_params[k] = v
-
             ## FOR COHERE
             if "command-r" in model:  # make sure tool call in messages are str
                 messages = stringify_json_tool_call_content(messages=messages)
 
             ## COMPLETION CALL
             try:
-                response = openai_chat_completions.completion(
+                response = base_llm_http_handler.completion(
                     model=model,
                     messages=messages,
                     headers=headers,
                     model_response=model_response,
-                    print_verbose=print_verbose,
                     api_key=api_key,
                     api_base=api_base,
                     acompletion=acompletion,
                     logging_obj=logging,
                     optional_params=optional_params,
                     litellm_params=litellm_params,
-                    logger_fn=logger_fn,
                     timeout=timeout,  # type: ignore
-                    custom_prompt_dict=custom_prompt_dict,
                     client=client,  # pass AsyncOpenAI, OpenAI client
-                    organization=organization,
                     custom_llm_provider=custom_llm_provider,
-                    drop_params=non_default_params.get("drop_params"),
+                    encoding=encoding,
+                    stream=stream,
                 )
             except Exception as e:
                 ## LOGGING - log the original exception returned
@@ -2897,6 +2806,42 @@ def completion(  # type: ignore # noqa: PLR0915
                 )
                 return response
             response = model_response
+        elif custom_llm_provider == "aiohttp_openai":
+            api_base = (
+                api_base  # for deepinfra/perplexity/anyscale/groq/friendliai we check in get_llm_provider and pass in the api base from there
+                or litellm.api_base
+                or get_secret("OPENAI_API_BASE")
+                or "https://api.openai.com/v1"
+            )
+            # set API KEY
+            api_key = (
+                api_key
+                or litellm.api_key  # for deepinfra/perplexity/anyscale/friendliai we check in get_llm_provider and pass in the api key from there
+                or litellm.openai_key
+                or get_secret("OPENAI_API_KEY")
+            )
+
+            headers = headers or litellm.headers
+
+            if extra_headers is not None:
+                optional_params["extra_headers"] = extra_headers
+            response = base_llm_aiohttp_handler.completion(
+                model=model,
+                messages=messages,
+                headers=headers,
+                model_response=model_response,
+                api_key=api_key,
+                api_base=api_base,
+                acompletion=acompletion,
+                logging_obj=logging,
+                optional_params=optional_params,
+                litellm_params=litellm_params,
+                timeout=timeout,
+                client=client,
+                custom_llm_provider=custom_llm_provider,
+                encoding=encoding,
+                stream=stream,
+            )
         elif custom_llm_provider == "custom":
             url = litellm.api_base or api_base or ""
             if url is None or url == "":
@@ -4314,7 +4259,11 @@ def moderation(
 
 @client
 async def amoderation(
-    input: str, model: Optional[str] = None, api_key: Optional[str] = None, **kwargs
+    input: str,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    custom_llm_provider: Optional[str] = None,
+    **kwargs,
 ):
     from openai import AsyncOpenAI
 
@@ -4335,6 +4284,20 @@ async def amoderation(
         )
     else:
         _openai_client = openai_client
+
+    optional_params = GenericLiteLLMParams(**kwargs)
+    try:
+        model, _custom_llm_provider, _dynamic_api_key, _dynamic_api_base = (
+            litellm.get_llm_provider(
+                model=model or "",
+                custom_llm_provider=custom_llm_provider,
+                api_base=optional_params.api_base,
+                api_key=optional_params.api_key,
+            )
+        )
+    except litellm.BadRequestError:
+        # `model` is optional field for moderation - get_llm_provider will throw BadRequestError if model is not set / not recognized
+        pass
     if model is not None:
         response = await _openai_client.moderations.create(input=input, model=model)
     else:
@@ -5095,7 +5058,6 @@ def speech(
             aspeech=aspeech,
         )
     elif custom_llm_provider == "vertex_ai" or custom_llm_provider == "vertex_ai_beta":
-        from litellm.types.router import GenericLiteLLMParams
 
         generic_optional_params = GenericLiteLLMParams(**kwargs)
 

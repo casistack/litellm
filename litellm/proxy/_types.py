@@ -1146,6 +1146,7 @@ class KeyManagementSystem(enum.Enum):
     AZURE_KEY_VAULT = "azure_key_vault"
     AWS_SECRET_MANAGER = "aws_secret_manager"
     GOOGLE_SECRET_MANAGER = "google_secret_manager"
+    HASHICORP_VAULT = "hashicorp_vault"
     LOCAL = "local"
     AWS_KMS = "aws_kms"
 
@@ -2237,3 +2238,6 @@ class ProxyStateVariables(TypedDict):
     """
 
     spend_logs_row_count: int
+
+
+UI_TEAM_ID = "litellm-dashboard"

@@ -44,7 +44,6 @@ const sidebars = {
             "proxy/model_management",
             "proxy/health",
             "proxy/debugging",
-            "proxy/pass_through",
             "proxy/spending_monitoring",
         ],
         },
@@ -118,7 +117,13 @@ const sidebars = {
         {
           type: "category",
           label: "Logging, Alerting, Metrics",
-          items: ["proxy/logging", "proxy/logging_spec", "proxy/team_logging","proxy/alerting", "proxy/prometheus"],
+          items: [
+            "proxy/logging", 
+            "proxy/logging_spec", 
+            "proxy/team_logging",
+            "proxy/prometheus", 
+            "proxy/alerting", 
+            "proxy/pagerduty"],
         },
         {
           type: "category",
@@ -297,6 +302,7 @@ const sidebars = {
         "realtime",
         "fine_tuning",
         "moderation",
+        "proxy/pass_through",
       ],
     },
     {
@@ -384,6 +390,7 @@ const sidebars = {
         "debugging/local_debugging",
         "observability/raw_request_response",
         "observability/custom_callback",
+        "observability/humanloop",
         "observability/scrub_data",
         "observability/braintrust",
         "observability/sentry",
