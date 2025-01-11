@@ -133,6 +133,7 @@ from litellm.types.utils import (
     Function,
     ImageResponse,
     LlmProviders,
+    LlmProvidersSet,
     Message,
     ModelInfo,
     ModelInfoBase,
@@ -607,10 +608,11 @@ async def _client_async_logging_helper(
         asyncio.create_task(
             logging_obj.async_success_handler(result, start_time, end_time)
         )
-        threading.Thread(
-            target=logging_obj.success_handler,
-            args=(result, start_time, end_time),
-        ).start()
+        logging_obj.handle_sync_success_callbacks_for_async_calls(
+            result=result,
+            start_time=start_time,
+            end_time=end_time,
+        )
 
 
 def client(original_function):  # noqa: PLR0915
@@ -1152,11 +1154,10 @@ def client(original_function):  # noqa: PLR0915
                     is_completion_with_fallbacks=is_completion_with_fallbacks,
                 )
             )
-            executor.submit(
-                logging_obj.success_handler,
-                result,
-                start_time,
-                end_time,
+            logging_obj.handle_sync_success_callbacks_for_async_calls(
+                result=result,
+                start_time=start_time,
+                end_time=end_time,
             )
             # REBUILD EMBEDDING CACHING
             if (
@@ -1945,16 +1946,15 @@ def register_model(model_cost: Union[str, dict]):  # noqa: PLR0915
     for key, value in loaded_model_cost.items():
         ## get model info ##
         try:
-            existing_model: Union[ModelInfo, dict] = get_model_info(model=key)
+            existing_model: dict = cast(dict, get_model_info(model=key))
             model_cost_key = existing_model["key"]
         except Exception:
             existing_model = {}
             model_cost_key = key
         ## override / add new keys to the existing model cost dictionary
-        litellm.model_cost.setdefault(model_cost_key, {}).update(
-            _update_dictionary(existing_model, value)  # type: ignore
-        )
-        verbose_logger.debug(f"{key} added to model cost map")
+        updated_dictionary = _update_dictionary(existing_model, value)
+        litellm.model_cost.setdefault(model_cost_key, {}).update(updated_dictionary)
+        verbose_logger.debug(f"{model_cost_key} added to model cost map")
         # add new model names to provider lists
         if value.get("litellm_provider") == "openai":
             if key not in litellm.open_ai_chat_completion_models:
@@ -4108,9 +4108,7 @@ def _get_model_info_helper(  # noqa: PLR0915
                 ):
                     _model_info = None
 
-            if custom_llm_provider and custom_llm_provider in [
-                provider.value for provider in LlmProviders
-            ]:
+            if custom_llm_provider and custom_llm_provider in LlmProvidersSet:
                 # Check if the provider string exists in LlmProviders enum
                 provider_config = ProviderConfigManager.get_provider_model_info(
                     model=model, provider=LlmProviders(custom_llm_provider)

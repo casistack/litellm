@@ -1458,8 +1458,9 @@ class StandardLoggingUserAPIKeyMetadata(TypedDict):
 
 
 class StandardLoggingPromptManagementMetadata(TypedDict):
-    prompt_id: Optional[str]
+    prompt_id: str
     prompt_variables: Optional[dict]
+    prompt_integration: str
 
 
 class StandardLoggingMetadata(StandardLoggingUserAPIKeyMetadata):
@@ -1815,6 +1816,10 @@ class LlmProviders(str, Enum):
     AIOHTTP_OPENAI = "aiohttp_openai"
     LANGFUSE = "langfuse"
     HUMANLOOP = "humanloop"
+
+
+# Create a set of all provider values for quick lookup
+LlmProvidersSet = {provider.value for provider in LlmProviders}
 
 
 class LiteLLMLoggingBaseClass:
