@@ -2,7 +2,7 @@
 import warnings
 
 warnings.filterwarnings("ignore", message=".*conflict with protected namespace.*")
-### INIT VARIABLES #####
+### INIT VARIABLES ######
 import threading
 import os
 from typing import Callable, List, Optional, Dict, Union, Any, Literal, get_args
@@ -18,6 +18,7 @@ from litellm._logging import (
     _turn_on_json,
     log_level,
 )
+import re
 from litellm.constants import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_FLUSH_INTERVAL_SECONDS,
@@ -49,10 +50,10 @@ if set_verbose == True:
     _turn_on_debug()
 ###############################################
 ### Callbacks /Logging / Success / Failure Handlers #####
-input_callback: List[Union[str, Callable]] = []
-success_callback: List[Union[str, Callable]] = []
-failure_callback: List[Union[str, Callable]] = []
-service_callback: List[Union[str, Callable]] = []
+input_callback: List[Union[str, Callable, CustomLogger]] = []
+success_callback: List[Union[str, Callable, CustomLogger]] = []
+failure_callback: List[Union[str, Callable, CustomLogger]] = []
+service_callback: List[Union[str, Callable, CustomLogger]] = []
 _custom_logger_compatible_callbacks_literal = Literal[
     "lago",
     "openmeter",
@@ -89,13 +90,13 @@ langsmith_batch_size: Optional[int] = None
 argilla_batch_size: Optional[int] = None
 datadog_use_v1: Optional[bool] = False  # if you want to use v1 datadog logged payload
 argilla_transformation_object: Optional[Dict[str, Any]] = None
-_async_input_callback: List[Callable] = (
+_async_input_callback: List[Union[str, Callable, CustomLogger]] = (
     []
 )  # internal variable - async custom callbacks are routed here.
-_async_success_callback: List[Union[str, Callable]] = (
+_async_success_callback: List[Union[str, Callable, CustomLogger]] = (
     []
 )  # internal variable - async custom callbacks are routed here.
-_async_failure_callback: List[Callable] = (
+_async_failure_callback: List[Union[str, Callable, CustomLogger]] = (
     []
 )  # internal variable - async custom callbacks are routed here.
 pre_call_rules: List[Callable] = []
@@ -104,6 +105,7 @@ turn_off_message_logging: Optional[bool] = False
 log_raw_request_response: bool = False
 redact_messages_in_exceptions: Optional[bool] = False
 redact_user_api_key_info: Optional[bool] = False
+filter_invalid_headers: Optional[bool] = False
 add_user_information_to_llm_headers: Optional[bool] = (
     None  # adds user_id, team_id, token hash (params from StandardLoggingMetadata) to request headers
 )
@@ -484,9 +486,44 @@ galadriel_models: List = []
 sambanova_models: List = []
 
 
+def is_bedrock_pricing_only_model(key: str) -> bool:
+    """
+    Excludes keys with the pattern 'bedrock/<region>/<model>'. These are in the model_prices_and_context_window.json file for pricing purposes only.
+
+    Args:
+        key (str): A key to filter.
+
+    Returns:
+        bool: True if the key matches the Bedrock pattern, False otherwise.
+    """
+    # Regex to match 'bedrock/<region>/<model>'
+    bedrock_pattern = re.compile(r"^bedrock/[a-zA-Z0-9_-]+/.+$")
+
+    if "month-commitment" in key:
+        return True
+
+    is_match = bedrock_pattern.match(key)
+    return is_match is not None
+
+
+def is_openai_finetune_model(key: str) -> bool:
+    """
+    Excludes model cost keys with the pattern 'ft:<model>'. These are in the model_prices_and_context_window.json file for pricing purposes only.
+
+    Args:
+        key (str): A key to filter.
+
+    Returns:
+        bool: True if the key matches the OpenAI finetune pattern, False otherwise.
+    """
+    return key.startswith("ft:") and not key.count(":") > 1
+
+
 def add_known_models():
     for key, value in model_cost.items():
-        if value.get("litellm_provider") == "openai":
+        if value.get("litellm_provider") == "openai" and not is_openai_finetune_model(
+            key
+        ):
             open_ai_chat_completion_models.append(key)
         elif value.get("litellm_provider") == "text-completion-openai":
             open_ai_text_completion_models.append(key)
@@ -542,7 +579,9 @@ def add_known_models():
             nlp_cloud_models.append(key)
         elif value.get("litellm_provider") == "aleph_alpha":
             aleph_alpha_models.append(key)
-        elif value.get("litellm_provider") == "bedrock":
+        elif value.get(
+            "litellm_provider"
+        ) == "bedrock" and not is_bedrock_pricing_only_model(key):
             bedrock_models.append(key)
         elif value.get("litellm_provider") == "bedrock_converse":
             bedrock_converse_models.append(key)
@@ -1018,6 +1057,7 @@ ALL_LITELLM_RESPONSE_TYPES = [
 ]
 
 from .llms.custom_llm import CustomLLM
+from .llms.bedrock.chat.converse_transformation import AmazonConverseConfig
 from .llms.openai_like.chat.handler import OpenAILikeChatConfig
 from .llms.aiohttp_openai.chat.transformation import AiohttpOpenAIChatConfig
 from .llms.galadriel.chat.transformation import GaladrielChatConfig
@@ -1092,7 +1132,7 @@ from .llms.bedrock.chat.invoke_handler import (
     AmazonCohereChatConfig,
     bedrock_tool_name_mappings,
 )
-from .llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
 from .llms.bedrock.common_utils import (
     AmazonTitanConfig,
     AmazonAI21Config,
@@ -1115,10 +1155,13 @@ from .llms.bedrock.embed.amazon_titan_v2_transformation import (
 from .llms.cohere.chat.transformation import CohereChatConfig
 from .llms.bedrock.embed.cohere_transformation import BedrockCohereEmbeddingConfig
 from .llms.openai.openai import OpenAIConfig, MistralEmbeddingConfig
+from .llms.openai.image_variations.transformation import OpenAIImageVariationConfig
 from .llms.deepinfra.chat.transformation import DeepInfraConfig
 from .llms.deepgram.audio_transcription.transformation import (
     DeepgramAudioTranscriptionConfig,
 )
+from .llms.topaz.common_utils import TopazModelInfo
+from .llms.topaz.image_variations.transformation import TopazImageVariationConfig
 from litellm.llms.openai.completion.transformation import OpenAITextCompletionConfig
 from .llms.groq.chat.transformation import GroqChatConfig
 from .llms.voyage.embedding.transformation import VoyageEmbeddingConfig

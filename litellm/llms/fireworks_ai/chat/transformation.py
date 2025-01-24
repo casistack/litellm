@@ -143,10 +143,8 @@ class FireworksAIConfig(OpenAIGPTConfig):
         """
         disable_add_transform_inline_image_block = cast(
             Optional[bool],
-            litellm_params.get(
-                "disable_add_transform_inline_image_block",
-                litellm.disable_add_transform_inline_image_block,
-            ),
+            litellm_params.get("disable_add_transform_inline_image_block")
+            or litellm.disable_add_transform_inline_image_block,
         )
         for message in messages:
             if message["role"] == "user":
@@ -224,6 +222,7 @@ class FireworksAIConfig(OpenAIGPTConfig):
         return api_base, dynamic_api_key
 
     def get_models(self, api_key: Optional[str] = None, api_base: Optional[str] = None):
+
         api_base, api_key = self._get_openai_compatible_provider_info(
             api_base=api_base, api_key=api_key
         )
@@ -249,4 +248,14 @@ class FireworksAIConfig(OpenAIGPTConfig):
             )
 
         models = response.json()["models"]
+
         return ["fireworks_ai/" + model["name"] for model in models]
+
+    @staticmethod
+    def get_api_key(api_key: Optional[str] = None) -> Optional[str]:
+        return api_key or (
+            get_secret_str("FIREWORKS_API_KEY")
+            or get_secret_str("FIREWORKS_AI_API_KEY")
+            or get_secret_str("FIREWORKSAI_API_KEY")
+            or get_secret_str("FIREWORKS_AI_TOKEN")
+        )

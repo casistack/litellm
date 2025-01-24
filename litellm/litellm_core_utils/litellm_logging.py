@@ -4,7 +4,6 @@
 import copy
 import datetime
 import json
-import logging
 import os
 import re
 import subprocess
@@ -13,6 +12,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime as dt_object
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union, cast
 
 from pydantic import BaseModel
@@ -23,8 +23,8 @@ from litellm import (
     json_logs,
     log_raw_request_response,
     turn_off_message_logging,
-    verbose_logger,
 )
+from litellm._logging import _is_debugging_on, verbose_logger
 from litellm.caching.caching import DualCache, InMemoryCache
 from litellm.caching.caching_handler import LLMCachingHandler
 from litellm.cost_calculator import _select_model_name_for_cost_calc
@@ -589,7 +589,7 @@ class Logging(LiteLLMLoggingBaseClass):
 
         Prints the RAW curl command sent from LiteLLM
         """
-        if verbose_logger.isEnabledFor(logging.DEBUG) or litellm.set_verbose is True:
+        if _is_debugging_on():
             if json_logs:
                 masked_headers = self._get_masked_headers(headers)
                 verbose_logger.debug(
@@ -757,6 +757,12 @@ class Logging(LiteLLMLoggingBaseClass):
                 )
             )
 
+    def get_response_ms(self) -> float:
+        return (
+            self.model_call_details.get("end_time", datetime.datetime.now())
+            - self.model_call_details.get("start_time", datetime.datetime.now())
+        ).total_seconds() * 1000
+
     def _response_cost_calculator(
         self,
         result: Union[
@@ -830,7 +836,7 @@ class Logging(LiteLLMLoggingBaseClass):
         except Exception as e:  # error calculating cost
             debug_info = StandardLoggingModelCostFailureDebugInformation(
                 error_str=str(e),
-                traceback_str=traceback.format_exc(),
+                traceback_str=_get_traceback_str_for_error(str(e)),
                 model=response_cost_calculator_kwargs["model"],
                 cache_hit=response_cost_calculator_kwargs["cache_hit"],
                 custom_llm_provider=response_cost_calculator_kwargs[
@@ -889,13 +895,9 @@ class Logging(LiteLLMLoggingBaseClass):
                     or isinstance(result, Batch)
                     or isinstance(result, FineTuningJob)
                 ):
-                    ## RESPONSE COST ##
-                    self.model_call_details["response_cost"] = (
-                        self._response_cost_calculator(result=result)
-                    )
-
                     ## HIDDEN PARAMS ##
-                    if hasattr(result, "_hidden_params"):
+                    hidden_params = getattr(result, "_hidden_params", {})
+                    if hidden_params:
                         # add to metadata for logging
                         if self.model_call_details.get("litellm_params") is not None:
                             self.model_call_details["litellm_params"].setdefault(
@@ -914,6 +916,15 @@ class Logging(LiteLLMLoggingBaseClass):
                             ] = getattr(
                                 result, "_hidden_params", {}
                             )
+                    ## RESPONSE COST - Only calculate if not in hidden_params ##
+                    if "response_cost" in hidden_params:
+                        self.model_call_details["response_cost"] = hidden_params[
+                            "response_cost"
+                        ]
+                    else:
+                        self.model_call_details["response_cost"] = (
+                            self._response_cost_calculator(result=result)
+                        )
                     ## STANDARDIZED LOGGING PAYLOAD
 
                     self.model_call_details["standard_logging_object"] = (
@@ -2987,6 +2998,7 @@ class StandardLoggingPayloadSetup:
             api_base=None,
             response_cost=None,
             additional_headers=None,
+            litellm_overhead_time_ms=None,
         )
         if hidden_params is not None:
             for key in StandardLoggingHiddenParams.__annotations__.keys():
@@ -3058,8 +3070,7 @@ def get_standard_logging_object_payload(
     original_exception: Optional[Exception] = None,
 ) -> Optional[StandardLoggingPayload]:
     try:
-        if kwargs is None:
-            kwargs = {}
+        kwargs = kwargs or {}
 
         hidden_params: Optional[dict] = None
         if init_response_obj is None:
@@ -3084,13 +3095,14 @@ def get_standard_logging_object_payload(
                         cache_key=None,
                         api_base=None,
                         response_cost=None,
+                        litellm_overhead_time_ms=None,
                     )
                 )
 
         # standardize this function to be used across, s3, dynamoDB, langfuse logging
         litellm_params = kwargs.get("litellm_params", {})
         proxy_server_request = litellm_params.get("proxy_server_request") or {}
-        end_user_id = proxy_server_request.get("body", {}).get("user", None)
+
         metadata: dict = (
             litellm_params.get("litellm_metadata")
             or litellm_params.get("metadata", None)
@@ -3137,6 +3149,11 @@ def get_standard_logging_object_payload(
             litellm_params=litellm_params,
             prompt_integration=kwargs.get("prompt_integration", None),
         )
+
+        _request_body = proxy_server_request.get("body", {})
+        end_user_id = clean_metadata["user_api_key_end_user_id"] or _request_body.get(
+            "user", None
+        )  # maintain backwards compatibility with old request body check
 
         saved_cache_cost: float = 0.0
         if cache_hit is True:
@@ -3223,12 +3240,18 @@ def get_standard_logging_object_payload(
             ),
         )
 
+        emit_standard_logging_payload(payload)
         return payload
     except Exception as e:
         verbose_logger.exception(
             "Error creating standard logging object - {}".format(str(e))
         )
         return None
+
+
+def emit_standard_logging_payload(payload: StandardLoggingPayload):
+    if os.getenv("LITELLM_PRINT_STANDARD_LOGGING_PAYLOAD"):
+        verbose_logger.info(json.dumps(payload, indent=4))
 
 
 def get_standard_logging_metadata(
@@ -3310,3 +3333,93 @@ def modify_integration(integration_name, integration_params):
     if integration_name == "supabase":
         if "table_name" in integration_params:
             Supabase.supabase_table_name = integration_params["table_name"]
+
+
+@lru_cache(maxsize=16)
+def _get_traceback_str_for_error(error_str: str) -> str:
+    """
+    function wrapped with lru_cache to limit the number of times `traceback.format_exc()` is called
+    """
+    return traceback.format_exc()
+
+
+from decimal import Decimal
+
+# used for unit testing
+from typing import Any, Dict, List, Optional, Union
+
+
+def create_dummy_standard_logging_payload() -> StandardLoggingPayload:
+    # First create the nested objects with proper typing
+    model_info = StandardLoggingModelInformation(
+        model_map_key="gpt-3.5-turbo", model_map_value=None
+    )
+
+    metadata = StandardLoggingMetadata(  # type: ignore
+        user_api_key_hash=str("test_hash"),
+        user_api_key_alias=str("test_alias"),
+        user_api_key_team_id=str("test_team"),
+        user_api_key_user_id=str("test_user"),
+        user_api_key_team_alias=str("test_team_alias"),
+        user_api_key_org_id=None,
+        spend_logs_metadata=None,
+        requester_ip_address=str("127.0.0.1"),
+        requester_metadata=None,
+        user_api_key_end_user_id=str("test_end_user"),
+    )
+
+    hidden_params = StandardLoggingHiddenParams(
+        model_id=None,
+        cache_key=None,
+        api_base=None,
+        response_cost=None,
+        additional_headers=None,
+        litellm_overhead_time_ms=None,
+    )
+
+    # Convert numeric values to appropriate types
+    response_cost = Decimal("0.1")
+    start_time = Decimal("1234567890.0")
+    end_time = Decimal("1234567891.0")
+    completion_start_time = Decimal("1234567890.5")
+    saved_cache_cost = Decimal("0.0")
+
+    # Create messages and response with proper typing
+    messages: List[Dict[str, str]] = [{"role": "user", "content": "Hello, world!"}]
+    response: Dict[str, List[Dict[str, Dict[str, str]]]] = {
+        "choices": [{"message": {"content": "Hi there!"}}]
+    }
+
+    # Main payload initialization
+    return StandardLoggingPayload(  # type: ignore
+        id=str("test_id"),
+        call_type=str("completion"),
+        stream=bool(False),
+        response_cost=response_cost,
+        response_cost_failure_debug_info=None,
+        status=str("success"),
+        total_tokens=int(30),
+        prompt_tokens=int(20),
+        completion_tokens=int(10),
+        startTime=start_time,
+        endTime=end_time,
+        completionStartTime=completion_start_time,
+        model_map_information=model_info,
+        model=str("gpt-3.5-turbo"),
+        model_id=str("model-123"),
+        model_group=str("openai-gpt"),
+        custom_llm_provider=str("openai"),
+        api_base=str("https://api.openai.com"),
+        metadata=metadata,
+        cache_hit=bool(False),
+        cache_key=None,
+        saved_cache_cost=saved_cache_cost,
+        request_tags=[],
+        end_user=None,
+        requester_ip_address=str("127.0.0.1"),
+        messages=messages,
+        response=response,
+        error_str=None,
+        model_parameters={"stream": True},
+        hidden_params=hidden_params,
+    )

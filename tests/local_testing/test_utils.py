@@ -1362,8 +1362,11 @@ def test_get_valid_models_fireworks_ai(monkeypatch):
     from litellm.utils import get_valid_models
     import litellm
 
+    litellm._turn_on_debug()
+
     monkeypatch.setenv("FIREWORKS_API_KEY", "sk-1234")
     monkeypatch.setenv("FIREWORKS_ACCOUNT_ID", "1234")
+    monkeypatch.setattr(litellm, "provider_list", ["fireworks_ai"])
 
     mock_response_data = {
         "models": [
@@ -1431,6 +1434,7 @@ def test_get_valid_models_fireworks_ai(monkeypatch):
         litellm.module_level_client, "get", return_value=mock_response
     ) as mock_post:
         valid_models = get_valid_models(check_provider_endpoint=True)
+        mock_post.assert_called_once()
         assert (
             "fireworks_ai/accounts/fireworks/models/llama-3.1-8b-instruct"
             in valid_models
@@ -1457,3 +1461,69 @@ def test_supports_vision_gemini():
     from litellm.utils import supports_vision
 
     assert supports_vision("gemini-1.5-pro") is True
+
+
+def test_pick_cheapest_chat_model_from_llm_provider():
+    from litellm.litellm_core_utils.llm_request_utils import (
+        pick_cheapest_chat_models_from_llm_provider,
+    )
+
+    assert len(pick_cheapest_chat_models_from_llm_provider("openai", n=3)) == 3
+
+    assert len(pick_cheapest_chat_models_from_llm_provider("unknown", n=1)) == 0
+
+
+def test_get_potential_model_names():
+    from litellm.utils import _get_potential_model_names
+
+    assert _get_potential_model_names(
+        model="bedrock/ap-northeast-1/anthropic.claude-instant-v1",
+        custom_llm_provider="bedrock",
+    )
+
+
+@pytest.mark.parametrize("num_retries", [0, 1, 5])
+def test_get_num_retries(num_retries):
+    from litellm.utils import _get_wrapper_num_retries
+
+    assert _get_wrapper_num_retries(
+        kwargs={"num_retries": num_retries}, exception=Exception("test")
+    ) == (
+        num_retries,
+        {
+            "num_retries": num_retries,
+        },
+    )
+
+
+def test_add_custom_logger_callback_to_specific_event(monkeypatch):
+    from litellm.utils import _add_custom_logger_callback_to_specific_event
+
+    monkeypatch.setattr(litellm, "success_callback", [])
+    monkeypatch.setattr(litellm, "failure_callback", [])
+
+    _add_custom_logger_callback_to_specific_event("langfuse", "success")
+
+    assert len(litellm.success_callback) == 1
+    assert len(litellm.failure_callback) == 0
+
+
+def test_add_custom_logger_callback_to_specific_event_e2e(monkeypatch):
+
+    monkeypatch.setattr(litellm, "success_callback", [])
+    monkeypatch.setattr(litellm, "failure_callback", [])
+    monkeypatch.setattr(litellm, "callbacks", [])
+
+    litellm.success_callback = ["humanloop"]
+
+    curr_len_success_callback = len(litellm.success_callback)
+    curr_len_failure_callback = len(litellm.failure_callback)
+
+    litellm.completion(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Hello, world!"}],
+        mock_response="Testing langfuse",
+    )
+
+    assert len(litellm.success_callback) == curr_len_success_callback
+    assert len(litellm.failure_callback) == curr_len_failure_callback

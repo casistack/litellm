@@ -57,6 +57,7 @@ import litellm._service_logger  # for storing API inputs, outputs, and metadata
 import litellm.litellm_core_utils
 import litellm.litellm_core_utils.audio_utils.utils
 import litellm.litellm_core_utils.json_validation_rule
+from litellm.caching._internal_lru_cache import lru_cache_wrapper
 from litellm.caching.caching import DualCache
 from litellm.caching.caching_handler import CachingHandlerResponse, LLMCachingHandler
 from litellm.integrations.custom_logger import CustomLogger
@@ -92,6 +93,9 @@ from litellm.litellm_core_utils.llm_response_utils.get_formatted_prompt import (
 from litellm.litellm_core_utils.llm_response_utils.get_headers import (
     get_response_headers,
 )
+from litellm.litellm_core_utils.llm_response_utils.response_metadata import (
+    ResponseMetadata,
+)
 from litellm.litellm_core_utils.redact_messages import (
     LiteLLMLoggingObject,
     redact_message_input_output_from_logging,
@@ -108,6 +112,7 @@ from litellm.router_utils.get_retry_from_policy import (
     reset_retry_policy,
 )
 from litellm.secret_managers.main import get_secret
+from litellm.types.llms.anthropic import ANTHROPIC_API_ONLY_HEADERS
 from litellm.types.llms.openai import (
     AllMessageValues,
     AllPromptValues,
@@ -177,13 +182,19 @@ from openai import OpenAIError as OriginalError
 from litellm.llms.base_llm.audio_transcription.transformation import (
     BaseAudioTranscriptionConfig,
 )
-from litellm.llms.base_llm.base_utils import BaseLLMModelInfo
+from litellm.llms.base_llm.base_utils import (
+    BaseLLMModelInfo,
+    type_to_response_format_param,
+)
 from litellm.llms.base_llm.chat.transformation import BaseConfig
 from litellm.llms.base_llm.completion.transformation import BaseTextCompletionConfig
 from litellm.llms.base_llm.embedding.transformation import BaseEmbeddingConfig
+from litellm.llms.base_llm.image_variations.transformation import (
+    BaseImageVariationConfig,
+)
 from litellm.llms.base_llm.rerank.transformation import BaseRerankConfig
 
-from ._logging import verbose_logger
+from ._logging import _is_debugging_on, verbose_logger
 from .caching.caching import (
     Cache,
     QdrantSemanticCache,
@@ -307,9 +318,61 @@ def custom_llm_setup():
             litellm._custom_providers.append(custom_llm["provider"])
 
 
+def _add_custom_logger_callback_to_specific_event(
+    callback: str, logging_event: Literal["success", "failure"]
+) -> None:
+    """
+    Add a custom logger callback to the specific event
+    """
+    from litellm import _custom_logger_compatible_callbacks_literal
+    from litellm.litellm_core_utils.litellm_logging import (
+        _init_custom_logger_compatible_class,
+    )
+
+    if callback not in litellm._known_custom_logger_compatible_callbacks:
+        verbose_logger.debug(
+            f"Callback {callback} is not a valid custom logger compatible callback. Known list - {litellm._known_custom_logger_compatible_callbacks}"
+        )
+        return
+
+    callback_class = _init_custom_logger_compatible_class(
+        cast(_custom_logger_compatible_callbacks_literal, callback),
+        internal_usage_cache=None,
+        llm_router=None,
+    )
+
+    # don't double add a callback
+    if callback_class is not None and not any(
+        isinstance(cb, type(callback_class)) for cb in litellm.callbacks  # type: ignore
+    ):
+        if logging_event == "success":
+            litellm.success_callback.append(callback_class)
+            litellm._async_success_callback.append(callback_class)
+            if callback in litellm.success_callback:
+                litellm.success_callback.remove(
+                    callback
+                )  # remove the string from the callback list
+            if callback in litellm._async_success_callback:
+                litellm._async_success_callback.remove(
+                    callback
+                )  # remove the string from the callback list
+        elif logging_event == "failure":
+            litellm.failure_callback.append(callback_class)
+            litellm._async_failure_callback.append(callback_class)
+            if callback in litellm.failure_callback:
+                litellm.failure_callback.remove(
+                    callback
+                )  # remove the string from the callback list
+            if callback in litellm._async_failure_callback:
+                litellm._async_failure_callback.remove(
+                    callback
+                )  # remove the string from the callback list
+
+
 def function_setup(  # noqa: PLR0915
     original_function: str, rules_obj, start_time, *args, **kwargs
 ):  # just run once to check if user wants to send their data anywhere - PostHog/Sentry/Slack/etc.
+
     ### NOTICES ###
     from litellm import Logging as LiteLLMLogging
     from litellm.litellm_core_utils.litellm_logging import set_callbacks
@@ -390,27 +453,11 @@ def function_setup(  # noqa: PLR0915
                     # we only support async dynamo db logging for acompletion/aembedding since that's used on proxy
                     litellm._async_success_callback.append(callback)
                     removed_async_items.append(index)
-                elif callback in litellm._known_custom_logger_compatible_callbacks:
-                    from litellm.litellm_core_utils.litellm_logging import (
-                        _init_custom_logger_compatible_class,
-                    )
-
-                    callback_class = _init_custom_logger_compatible_class(
-                        callback,  # type: ignore
-                        internal_usage_cache=None,
-                        llm_router=None,  # type: ignore
-                    )
-
-                    # don't double add a callback
-                    if callback_class is not None and not any(
-                        isinstance(cb, type(callback_class)) for cb in litellm.callbacks
-                    ):
-                        litellm.callbacks.append(callback_class)  # type: ignore
-                        litellm.input_callback.append(callback_class)  # type: ignore
-                        litellm.success_callback.append(callback_class)  # type: ignore
-                        litellm.failure_callback.append(callback_class)  # type: ignore
-                        litellm._async_success_callback.append(callback_class)  # type: ignore
-                        litellm._async_failure_callback.append(callback_class)  # type: ignore
+                elif (
+                    callback in litellm._known_custom_logger_compatible_callbacks
+                    and isinstance(callback, str)
+                ):
+                    _add_custom_logger_callback_to_specific_event(callback, "success")
 
             # Pop the async items from success_callback in reverse order to avoid index issues
             for index in reversed(removed_async_items):
@@ -615,6 +662,44 @@ async def _client_async_logging_helper(
         )
 
 
+def _get_wrapper_num_retries(
+    kwargs: Dict[str, Any], exception: Exception
+) -> Tuple[Optional[int], Dict[str, Any]]:
+    """
+    Get the number of retries from the kwargs and the retry policy.
+    Used for the wrapper functions.
+    """
+
+    num_retries = kwargs.get("num_retries", None)
+    if num_retries is None:
+        num_retries = litellm.num_retries
+    if kwargs.get("retry_policy", None):
+        retry_policy_num_retries = get_num_retries_from_retry_policy(
+            exception=exception,
+            retry_policy=kwargs.get("retry_policy"),
+        )
+        kwargs["retry_policy"] = reset_retry_policy()
+        if retry_policy_num_retries is not None:
+            num_retries = retry_policy_num_retries
+
+    return num_retries, kwargs
+
+
+def _get_wrapper_timeout(
+    kwargs: Dict[str, Any], exception: Exception
+) -> Optional[Union[float, int, httpx.Timeout]]:
+    """
+    Get the timeout from the kwargs
+    Used for the wrapper functions.
+    """
+
+    timeout = cast(
+        Optional[Union[float, int, httpx.Timeout]], kwargs.get("timeout", None)
+    )
+
+    return timeout
+
+
 def client(original_function):  # noqa: PLR0915
     rules_obj = Rules()
 
@@ -728,19 +813,6 @@ def client(original_function):  # noqa: PLR0915
 
         except Exception as e:
             raise e
-
-    def _get_num_retries(
-        kwargs: Dict[str, Any], exception: Exception
-    ) -> Tuple[Optional[int], Dict[str, Any]]:
-        num_retries = kwargs.get("num_retries", None) or litellm.num_retries or None
-        if kwargs.get("retry_policy", None):
-            num_retries = get_num_retries_from_retry_policy(
-                exception=exception,
-                retry_policy=kwargs.get("retry_policy"),
-            )
-            kwargs["retry_policy"] = reset_retry_policy()
-
-        return num_retries, kwargs
 
     @wraps(original_function)
     def wrapper(*args, **kwargs):  # noqa: PLR0915
@@ -913,6 +985,15 @@ def client(original_function):  # noqa: PLR0915
                         chunks, messages=kwargs.get("messages", None)
                     )
                 else:
+                    # RETURN RESULT
+                    update_response_metadata(
+                        result=result,
+                        logging_obj=logging_obj,
+                        model=model,
+                        kwargs=kwargs,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
                     return result
             elif "acompletion" in kwargs and kwargs["acompletion"] is True:
                 return result
@@ -923,6 +1004,8 @@ def client(original_function):  # noqa: PLR0915
             elif "atranscription" in kwargs and kwargs["atranscription"] is True:
                 return result
             elif "aspeech" in kwargs and kwargs["aspeech"] is True:
+                return result
+            elif asyncio.iscoroutine(result):  # bubble up to relevant async function
                 return result
 
             ### POST-CALL RULES ###
@@ -948,25 +1031,14 @@ def client(original_function):  # noqa: PLR0915
                 end_time,
             )
             # RETURN RESULT
-            if hasattr(result, "_hidden_params"):
-                result._hidden_params["model_id"] = kwargs.get("model_info", {}).get(
-                    "id", None
-                )
-                result._hidden_params["api_base"] = get_api_base(
-                    model=model or "",
-                    optional_params=getattr(logging_obj, "optional_params", {}),
-                )
-                result._hidden_params["response_cost"] = (
-                    logging_obj._response_cost_calculator(result=result)
-                )
-
-                result._hidden_params["additional_headers"] = process_response_headers(
-                    result._hidden_params.get("additional_headers") or {}
-                )  # GUARANTEE OPENAI HEADERS IN RESPONSE
-            if result is not None:
-                result._response_ms = (
-                    end_time - start_time
-                ).total_seconds() * 1000  # return response latency in ms like openai
+            update_response_metadata(
+                result=result,
+                logging_obj=logging_obj,
+                model=model,
+                kwargs=kwargs,
+                start_time=start_time,
+                end_time=end_time,
+            )
             return result
         except Exception as e:
             call_type = original_function.__name__
@@ -1098,39 +1170,17 @@ def client(original_function):  # noqa: PLR0915
                         chunks, messages=kwargs.get("messages", None)
                     )
                 else:
+                    update_response_metadata(
+                        result=result,
+                        logging_obj=logging_obj,
+                        model=model,
+                        kwargs=kwargs,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
                     return result
             elif call_type == CallTypes.arealtime.value:
                 return result
-
-            # ADD HIDDEN PARAMS - additional call metadata
-            if hasattr(result, "_hidden_params"):
-                result._hidden_params["litellm_call_id"] = getattr(
-                    logging_obj, "litellm_call_id", None
-                )
-                result._hidden_params["model_id"] = kwargs.get("model_info", {}).get(
-                    "id", None
-                )
-                result._hidden_params["api_base"] = get_api_base(
-                    model=model or "",
-                    optional_params=kwargs,
-                )
-                result._hidden_params["response_cost"] = (
-                    logging_obj._response_cost_calculator(result=result)
-                )
-                result._hidden_params["additional_headers"] = process_response_headers(
-                    result._hidden_params.get("additional_headers") or {}
-                )  # GUARANTEE OPENAI HEADERS IN RESPONSE
-            if (
-                isinstance(result, ModelResponse)
-                or isinstance(result, EmbeddingResponse)
-                or isinstance(result, TranscriptionResponse)
-            ):
-                setattr(
-                    result,
-                    "_response_ms",
-                    (end_time - start_time).total_seconds() * 1000,
-                )  # return response latency in ms like openai
-
             ### POST-CALL RULES ###
             post_call_processing(
                 original_response=result, model=model, optional_params=kwargs
@@ -1172,6 +1222,15 @@ def client(original_function):  # noqa: PLR0915
                     end_time=end_time,
                 )
 
+            update_response_metadata(
+                result=result,
+                logging_obj=logging_obj,
+                model=model,
+                kwargs=kwargs,
+                start_time=start_time,
+                end_time=end_time,
+            )
+
             return result
         except Exception as e:
             traceback_exception = traceback.format_exc()
@@ -1191,7 +1250,7 @@ def client(original_function):  # noqa: PLR0915
                     raise e
 
             call_type = original_function.__name__
-            num_retries, kwargs = _get_num_retries(kwargs=kwargs, exception=e)
+            num_retries, kwargs = _get_wrapper_num_retries(kwargs=kwargs, exception=e)
             if call_type == CallTypes.acompletion.value:
                 context_window_fallback_dict = kwargs.get(
                     "context_window_fallback_dict", {}
@@ -1200,9 +1259,11 @@ def client(original_function):  # noqa: PLR0915
                 _is_litellm_router_call = "model_group" in kwargs.get(
                     "metadata", {}
                 )  # check if call from litellm.router/proxy
+
                 if (
                     num_retries and not _is_litellm_router_call
                 ):  # only enter this if call is not from litellm router/proxy. router has it's own logic for retrying
+
                     try:
                         litellm.num_retries = (
                             None  # set retries to None to prevent infinite loops
@@ -1223,6 +1284,7 @@ def client(original_function):  # noqa: PLR0915
                     and context_window_fallback_dict
                     and model in context_window_fallback_dict
                 ):
+
                     if len(args) > 0:
                         args[0] = context_window_fallback_dict[model]  # type: ignore
                     else:
@@ -1232,6 +1294,9 @@ def client(original_function):  # noqa: PLR0915
             setattr(
                 e, "num_retries", num_retries
             )  ## IMPORTANT: returns the deployment's num_retries to the router
+
+            timeout = _get_wrapper_timeout(kwargs=kwargs, exception=e)
+            setattr(e, "timeout", timeout)
             raise e
 
     is_coroutine = inspect.iscoroutinefunction(original_function)
@@ -1273,6 +1338,31 @@ def _is_async_request(
     ):
         return True
     return False
+
+
+def update_response_metadata(
+    result: Any,
+    logging_obj: LiteLLMLoggingObject,
+    model: Optional[str],
+    kwargs: dict,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+) -> None:
+    """
+    Updates response metadata, adds the following:
+        - response._hidden_params
+        - response._hidden_params["litellm_overhead_time_ms"]
+        - response.response_time_ms
+    """
+    if result is None:
+        return
+
+    metadata = ResponseMetadata(result)
+    metadata.set_hidden_params(logging_obj=logging_obj, model=model, kwargs=kwargs)
+    metadata.set_timing_metrics(
+        start_time=start_time, end_time=end_time, logging_obj=logging_obj
+    )
+    metadata.apply()
 
 
 def _select_tokenizer(
@@ -1468,7 +1558,7 @@ def create_pretrained_tokenizer(
 
     try:
         tokenizer = Tokenizer.from_pretrained(
-            identifier, revision=revision, auth_token=auth_token
+            identifier, revision=revision, auth_token=auth_token  # type: ignore
         )
     except Exception as e:
         verbose_logger.error(
@@ -1726,9 +1816,15 @@ def supports_response_schema(
     Does not raise error. Defaults to 'False'. Outputs logging.error.
     """
     ## GET LLM PROVIDER ##
-    model, custom_llm_provider, _, _ = get_llm_provider(
-        model=model, custom_llm_provider=custom_llm_provider
-    )
+    try:
+        model, custom_llm_provider, _, _ = get_llm_provider(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+    except Exception as e:
+        verbose_logger.debug(
+            f"Model not found or error in checking response schema support. You passed model={model}, custom_llm_provider={custom_llm_provider}. Error: {str(e)}"
+        )
+        return False
 
     # providers that globally support response schema
     PROVIDERS_GLOBALLY_SUPPORT_RESPONSE_SCHEMA = [
@@ -1954,7 +2050,6 @@ def register_model(model_cost: Union[str, dict]):  # noqa: PLR0915
         ## override / add new keys to the existing model cost dictionary
         updated_dictionary = _update_dictionary(existing_model, value)
         litellm.model_cost.setdefault(model_cost_key, {}).update(updated_dictionary)
-        verbose_logger.debug(f"{model_cost_key} added to model cost map")
         # add new model names to provider lists
         if value.get("litellm_provider") == "openai":
             if key not in litellm.open_ai_chat_completion_models:
@@ -2036,7 +2131,10 @@ def get_litellm_params(
     drop_params: Optional[bool] = None,
     prompt_id: Optional[str] = None,
     prompt_variables: Optional[dict] = None,
-):
+    async_call: Optional[bool] = None,
+    ssl_verify: Optional[bool] = None,
+    **kwargs,
+) -> dict:
     litellm_params = {
         "acompletion": acompletion,
         "api_key": api_key,
@@ -2072,6 +2170,8 @@ def get_litellm_params(
         "drop_params": drop_params,
         "prompt_id": prompt_id,
         "prompt_variables": prompt_variables,
+        "async_call": async_call,
+        "ssl_verify": ssl_verify,
     }
     return litellm_params
 
@@ -2562,6 +2662,25 @@ def _remove_unsupported_params(
     return non_default_params
 
 
+def get_clean_extra_headers(extra_headers: dict, custom_llm_provider: str) -> dict:
+    """
+    For `anthropic-beta` headers, ensure provider is anthropic.
+
+    Vertex AI raises an exception if `anthropic-beta` is passed in.
+    """
+    if litellm.filter_invalid_headers is not True:  # allow user to opt out of filtering
+        return extra_headers
+    clean_extra_headers = {}
+    for k, v in extra_headers.items():
+        if k in ANTHROPIC_API_ONLY_HEADERS and custom_llm_provider != "anthropic":
+            verbose_logger.debug(
+                f"Provider {custom_llm_provider} does not support {k} header. Dropping from request, to prevent errors."
+            )  # Switching between anthropic api and vertex ai anthropic fails when anthropic-beta is passed in. Welcome feedback on this.
+        else:
+            clean_extra_headers[k] = v
+    return clean_extra_headers
+
+
 def get_optional_params(  # noqa: PLR0915
     # use the openai defaults
     # https://platform.openai.com/docs/api-reference/chat/create
@@ -2700,6 +2819,12 @@ def get_optional_params(  # noqa: PLR0915
         )
     }
 
+    ## Supports anthropic headers
+    if extra_headers is not None:
+        extra_headers = get_clean_extra_headers(
+            extra_headers=extra_headers, custom_llm_provider=custom_llm_provider
+        )
+
     ## raise exception if function calling passed in for a provider that doesn't support it
     if (
         "functions" in non_default_params
@@ -2759,10 +2884,25 @@ def get_optional_params(  # noqa: PLR0915
                     message=f"Function calling is not supported by {custom_llm_provider}.",
                 )
 
-    if "response_format" in non_default_params:
-        non_default_params["response_format"] = type_to_response_format_param(
-            response_format=non_default_params["response_format"]
+    provider_config: Optional[BaseConfig] = None
+    if custom_llm_provider is not None and custom_llm_provider in [
+        provider.value for provider in LlmProviders
+    ]:
+        provider_config = ProviderConfigManager.get_provider_chat_config(
+            model=model, provider=LlmProviders(custom_llm_provider)
         )
+
+    if "response_format" in non_default_params:
+        if provider_config is not None:
+            non_default_params["response_format"] = (
+                provider_config.get_json_schema_from_pydantic_object(
+                    response_format=non_default_params["response_format"]
+                )
+            )
+        else:
+            non_default_params["response_format"] = type_to_response_format_param(
+                response_format=non_default_params["response_format"]
+            )
 
     if "tools" in non_default_params and isinstance(
         non_default_params, list
@@ -2821,13 +2961,6 @@ def get_optional_params(  # noqa: PLR0915
                     message=f"{custom_llm_provider} does not support parameters: {unsupported_params}, for model={model}. To drop these, set `litellm.drop_params=True` or for proxy:\n\n`litellm_settings:\n drop_params: true`\n",
                 )
 
-    provider_config: Optional[BaseConfig] = None
-    if custom_llm_provider is not None and custom_llm_provider in [
-        provider.value for provider in LlmProviders
-    ]:
-        provider_config = ProviderConfigManager.get_provider_chat_config(
-            model=model, provider=LlmProviders(custom_llm_provider)
-        )
     supported_params = get_supported_openai_params(
         model=model, custom_llm_provider=custom_llm_provider
     )
@@ -3461,6 +3594,12 @@ def get_optional_params(  # noqa: PLR0915
         for k in passed_params.keys():
             if k not in default_params.keys():
                 optional_params[k] = passed_params[k]
+    if extra_headers is not None:
+        optional_params.setdefault("extra_headers", {})
+        optional_params["extra_headers"] = {
+            **optional_params["extra_headers"],
+            **extra_headers,
+        }
     print_verbose(f"Final returned optional params: {optional_params}")
     return optional_params
 
@@ -3890,9 +4029,11 @@ def _strip_model_name(model: str, custom_llm_provider: Optional[str]) -> str:
     elif custom_llm_provider and (custom_llm_provider == "databricks"):
         strip_version = _strip_stable_vertex_version(model_name=model)
         return strip_version
-    else:
+    elif "ft:" in model:
         strip_finetune = _strip_openai_finetune_model_name(model_name=model)
         return strip_finetune
+    else:
+        return model
 
 
 def _get_model_info_from_model_cost(key: str) -> dict:
@@ -3953,7 +4094,7 @@ def _get_potential_model_names(
     elif custom_llm_provider and model.startswith(
         custom_llm_provider + "/"
     ):  # handle case where custom_llm_provider is provided and model starts with custom_llm_provider
-        split_model = model.split("/")[1]
+        split_model = model.split("/", 1)[1]
         combined_model_name = model
         stripped_model_name = _strip_model_name(
             model=split_model, custom_llm_provider=custom_llm_provider
@@ -3969,7 +4110,7 @@ def _get_potential_model_names(
         )
         combined_stripped_model_name = "{}/{}".format(
             custom_llm_provider,
-            _strip_model_name(model=model, custom_llm_provider=custom_llm_provider),
+            stripped_model_name,
         )
 
     return PotentialModelNamesAndCustomLLMProvider(
@@ -4002,6 +4143,18 @@ def _get_max_position_embeddings(model_name: str) -> Optional[int]:
             return None
     except Exception:
         return None
+
+
+@lru_cache_wrapper(maxsize=16)
+def _cached_get_model_info_helper(
+    model: str, custom_llm_provider: Optional[str]
+) -> ModelInfoBase:
+    """
+    _get_model_info_helper wrapped with lru_cache
+
+    Speed Optimization to hit high RPS
+    """
+    return _get_model_info_helper(model=model, custom_llm_provider=custom_llm_provider)
 
 
 def _get_model_info_helper(  # noqa: PLR0915
@@ -4121,8 +4274,7 @@ def _get_model_info_helper(  # noqa: PLR0915
                         model=model, existing_model_info=_model_info
                     ),
                 )
-                if key is None:
-                    key = "provider_specific_model_info"
+                key = "provider_specific_model_info"
             if _model_info is None or key is None:
                 raise ValueError(
                     "This model isn't mapped yet. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
@@ -4228,6 +4380,7 @@ def _get_model_info_helper(  # noqa: PLR0915
                 rpm=_model_info.get("rpm", None),
             )
     except Exception as e:
+        verbose_logger.debug(f"Error getting model info: {e}")
         if "OllamaError" in str(e):
             raise e
         raise Exception(
@@ -4936,36 +5089,6 @@ def _should_retry(status_code: int):
     return False
 
 
-def type_to_response_format_param(
-    response_format: Optional[Union[Type[BaseModel], dict]],
-) -> Optional[dict]:
-    """
-    Re-implementation of openai's 'type_to_response_format_param' function
-
-    Used for converting pydantic object to api schema.
-    """
-    if response_format is None:
-        return None
-
-    if isinstance(response_format, dict):
-        return response_format
-
-    # type checkers don't narrow the negation of a `TypeGuard` as it isn't
-    # a safe default behaviour but we know that at this point the `response_format`
-    # can only be a `type`
-    if not _parsing._completions.is_basemodel_type(response_format):
-        raise TypeError(f"Unsupported response_format type - {response_format}")
-
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "schema": _pydantic.to_strict_json_schema(response_format),
-            "name": response_format.__name__,
-            "strict": True,
-        },
-    }
-
-
 def _get_retry_after_from_exception_header(
     response_headers: Optional[httpx.Headers] = None,
 ):
@@ -5220,134 +5343,6 @@ def read_config_args(config_path) -> dict:
 
 
 ########## experimental completion variants ############################
-
-
-def completion_with_fallbacks(**kwargs):
-    nested_kwargs = kwargs.pop("kwargs", {})
-    response = None
-    rate_limited_models = set()
-    model_expiration_times = {}
-    start_time = time.time()
-    original_model = kwargs["model"]
-    fallbacks = [kwargs["model"]] + nested_kwargs.get("fallbacks", [])
-    if "fallbacks" in nested_kwargs:
-        del nested_kwargs["fallbacks"]  # remove fallbacks so it's not recursive
-    litellm_call_id = str(uuid.uuid4())
-
-    # max time to process a request with fallbacks: default 45s
-    while response is None and time.time() - start_time < 45:
-        for model in fallbacks:
-            # loop thru all models
-            try:
-                # check if it's dict or new model string
-                if isinstance(
-                    model, dict
-                ):  # completion(model="gpt-4", fallbacks=[{"api_key": "", "api_base": ""}, {"api_key": "", "api_base": ""}])
-                    kwargs["api_key"] = model.get("api_key", None)
-                    kwargs["api_base"] = model.get("api_base", None)
-                    model = model.get("model", original_model)
-                elif (
-                    model in rate_limited_models
-                ):  # check if model is currently cooling down
-                    if (
-                        model_expiration_times.get(model)
-                        and time.time() >= model_expiration_times[model]
-                    ):
-                        rate_limited_models.remove(
-                            model
-                        )  # check if it's been 60s of cool down and remove model
-                    else:
-                        continue  # skip model
-
-                # delete model from kwargs if it exists
-                if kwargs.get("model"):
-                    del kwargs["model"]
-
-                print_verbose(f"trying to make completion call with model: {model}")
-                kwargs["litellm_call_id"] = litellm_call_id
-                kwargs = {
-                    **kwargs,
-                    **nested_kwargs,
-                }  # combine the openai + litellm params at the same level
-                response = litellm.completion(**kwargs, model=model)
-                print_verbose(f"response: {response}")
-                if response is not None:
-                    return response
-
-            except Exception as e:
-                print_verbose(e)
-                rate_limited_models.add(model)
-                model_expiration_times[model] = (
-                    time.time() + 60
-                )  # cool down this selected model
-                pass
-    return response
-
-
-async def async_completion_with_fallbacks(**kwargs):
-    nested_kwargs = kwargs.pop("kwargs", {})
-    response = None
-    rate_limited_models = set()
-    model_expiration_times = {}
-    start_time = time.time()
-    original_model = kwargs["model"]
-    fallbacks = [kwargs["model"]] + nested_kwargs.get("fallbacks", [])
-    if "fallbacks" in nested_kwargs:
-        del nested_kwargs["fallbacks"]  # remove fallbacks so it's not recursive
-    if "acompletion" in kwargs:
-        del kwargs[
-            "acompletion"
-        ]  # remove acompletion so it doesn't lead to keyword errors
-    litellm_call_id = str(uuid.uuid4())
-
-    # max time to process a request with fallbacks: default 45s
-    while response is None and time.time() - start_time < 45:
-        for model in fallbacks:
-            # loop thru all models
-            try:
-                # check if it's dict or new model string
-                if isinstance(
-                    model, dict
-                ):  # completion(model="gpt-4", fallbacks=[{"api_key": "", "api_base": ""}, {"api_key": "", "api_base": ""}])
-                    kwargs["api_key"] = model.get("api_key", None)
-                    kwargs["api_base"] = model.get("api_base", None)
-                    model = model.get("model", original_model)
-                elif (
-                    model in rate_limited_models
-                ):  # check if model is currently cooling down
-                    if (
-                        model_expiration_times.get(model)
-                        and time.time() >= model_expiration_times[model]
-                    ):
-                        rate_limited_models.remove(
-                            model
-                        )  # check if it's been 60s of cool down and remove model
-                    else:
-                        continue  # skip model
-
-                # delete model from kwargs if it exists
-                if kwargs.get("model"):
-                    del kwargs["model"]
-
-                print_verbose(f"trying to make completion call with model: {model}")
-                kwargs["litellm_call_id"] = litellm_call_id
-                kwargs = {
-                    **kwargs,
-                    **nested_kwargs,
-                }  # combine the openai + litellm params at the same level
-                response = await litellm.acompletion(**kwargs, model=model)
-                print_verbose(f"response: {response}")
-                if response is not None:
-                    return response
-
-            except Exception as e:
-                print_verbose(f"error: {e}")
-                rate_limited_models.add(model)
-                model_expiration_times[model] = (
-                    time.time() + 60
-                )  # cool down this selected model
-                pass
-    return response
 
 
 def process_system_message(system_message, max_tokens, model):
@@ -5610,6 +5605,8 @@ def get_valid_models(check_provider_endpoint: bool = False) -> List[str]:
 
 
 def print_args_passed_to_litellm(original_function, args, kwargs):
+    if not _is_debugging_on():
+        return
     try:
         # we've already printed this for acompletion, don't print for completion
         if (
@@ -6161,9 +6158,24 @@ class ProviderConfigManager:
     ) -> Optional[BaseLLMModelInfo]:
         if LlmProviders.FIREWORKS_AI == provider:
             return litellm.FireworksAIConfig()
+        elif LlmProviders.OPENAI == provider:
+            return litellm.OpenAIGPTConfig()
         elif LlmProviders.LITELLM_PROXY == provider:
             return litellm.LiteLLMProxyChatConfig()
+        elif LlmProviders.TOPAZ == provider:
+            return litellm.TopazModelInfo()
 
+        return None
+
+    @staticmethod
+    def get_provider_image_variation_config(
+        model: str,
+        provider: LlmProviders,
+    ) -> Optional[BaseImageVariationConfig]:
+        if LlmProviders.OPENAI == provider:
+            return litellm.OpenAIImageVariationConfig()
+        elif LlmProviders.TOPAZ == provider:
+            return litellm.TopazImageVariationConfig()
         return None
 
 
