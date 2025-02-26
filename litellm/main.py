@@ -50,6 +50,7 @@ from litellm import (  # type: ignore
     get_litellm_params,
     get_optional_params,
 )
+from litellm.exceptions import LiteLLMUnknownProvider
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.audio_utils.utils import get_audio_file_for_health_check
 from litellm.litellm_core_utils.health_check_utils import (
@@ -215,7 +216,6 @@ azure_audio_transcriptions = AzureAudioTranscription()
 huggingface = Huggingface()
 predibase_chat_completions = PredibaseChatCompletion()
 codestral_text_completions = CodestralTextCompletion()
-bedrock_chat_completion = BedrockLLM()
 bedrock_converse_chat_completion = BedrockConverseLLM()
 bedrock_embedding = BedrockEmbedding()
 bedrock_image_generation = BedrockImageGeneration()
@@ -2575,6 +2575,7 @@ def completion(  # type: ignore # noqa: PLR0915
                 print_verbose=print_verbose,
                 optional_params=optional_params,
                 litellm_params=litellm_params,
+                timeout=timeout,
                 custom_prompt_dict=custom_prompt_dict,
                 logger_fn=logger_fn,
                 encoding=encoding,
@@ -2637,7 +2638,6 @@ def completion(  # type: ignore # noqa: PLR0915
                     messages=messages,
                     custom_prompt_dict=custom_prompt_dict,
                     model_response=model_response,
-                    print_verbose=print_verbose,
                     optional_params=optional_params,
                     litellm_params=litellm_params,  # type: ignore
                     logger_fn=logger_fn,
@@ -3037,8 +3037,8 @@ def completion(  # type: ignore # noqa: PLR0915
                     custom_handler = item["custom_handler"]
 
             if custom_handler is None:
-                raise ValueError(
-                    f"Unable to map your input to a model. Check your input - {args}"
+                raise LiteLLMUnknownProvider(
+                    model=model, custom_llm_provider=custom_llm_provider
                 )
 
             ## ROUTE LLM CALL ##
@@ -3076,8 +3076,8 @@ def completion(  # type: ignore # noqa: PLR0915
                 )
 
         else:
-            raise ValueError(
-                f"Unable to map your input to a model. Check your input - {args}"
+            raise LiteLLMUnknownProvider(
+                model=model, custom_llm_provider=custom_llm_provider
             )
         return response
     except Exception as e:
@@ -3264,17 +3264,10 @@ def embedding(  # noqa: PLR0915
     """
     azure = kwargs.get("azure", None)
     client = kwargs.pop("client", None)
-    rpm = kwargs.pop("rpm", None)
-    tpm = kwargs.pop("tpm", None)
     max_retries = kwargs.get("max_retries", None)
     litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
-    cooldown_time = kwargs.get("cooldown_time", None)
     mock_response: Optional[List[float]] = kwargs.get("mock_response", None)  # type: ignore
-    max_parallel_requests = kwargs.pop("max_parallel_requests", None)
     azure_ad_token_provider = kwargs.pop("azure_ad_token_provider", None)
-    model_info = kwargs.get("model_info", None)
-    metadata = kwargs.get("metadata", None)
-    proxy_server_request = kwargs.get("proxy_server_request", None)
     aembedding = kwargs.get("aembedding", None)
     extra_headers = kwargs.get("extra_headers", None)
     headers = kwargs.get("headers", None)
@@ -3367,7 +3360,6 @@ def embedding(  # noqa: PLR0915
 
         if azure is True or custom_llm_provider == "azure":
             # azure configs
-            api_type = get_secret_str("AZURE_API_TYPE") or "azure"
 
             api_base = api_base or litellm.api_base or get_secret_str("AZURE_API_BASE")
 
@@ -3417,6 +3409,7 @@ def embedding(  # noqa: PLR0915
             or custom_llm_provider == "openai"
             or custom_llm_provider == "together_ai"
             or custom_llm_provider == "nvidia_nim"
+            or custom_llm_provider == "litellm_proxy"
         ):
             api_base = (
                 api_base
@@ -3440,7 +3433,6 @@ def embedding(  # noqa: PLR0915
             if extra_headers is not None:
                 optional_params["extra_headers"] = extra_headers
 
-            api_type = "openai"
             api_version = None
 
             ## EMBEDDING CALL
@@ -3494,7 +3486,8 @@ def embedding(  # noqa: PLR0915
             # set API KEY
             if api_key is None:
                 api_key = (
-                    litellm.api_key
+                    api_key
+                    or litellm.api_key
                     or litellm.openai_like_key
                     or get_secret_str("OPENAI_LIKE_API_KEY")
                 )
@@ -3851,14 +3844,16 @@ def embedding(  # noqa: PLR0915
                 aembedding=aembedding,
             )
         else:
-            args = locals()
-            raise ValueError(f"No valid embedding model args passed in - {args}")
+            raise LiteLLMUnknownProvider(
+                model=model, custom_llm_provider=custom_llm_provider
+            )
         if response is not None and hasattr(response, "_hidden_params"):
             response._hidden_params["custom_llm_provider"] = custom_llm_provider
 
         if response is None:
-            args = locals()
-            raise ValueError(f"No valid embedding model args passed in - {args}")
+            raise LiteLLMUnknownProvider(
+                model=model, custom_llm_provider=custom_llm_provider
+            )
         return response
     except Exception as e:
         ## LOGGING
@@ -3947,7 +3942,7 @@ async def atext_completion(
                 ),
                 model=model,
                 custom_llm_provider=custom_llm_provider,
-                stream_options=kwargs.get('stream_options'),
+                stream_options=kwargs.get("stream_options"),
             )
         else:
             ## OpenAI / Azure Text Completion Returns here
@@ -4603,7 +4598,10 @@ def image_generation(  # noqa: PLR0915
                 client=client,
                 headers=headers,
             )
-        elif custom_llm_provider == "openai":
+        elif (
+            custom_llm_provider == "openai"
+            or custom_llm_provider in litellm.openai_compatible_providers
+        ):
             model_response = openai_chat_completions.image_generation(
                 model=model,
                 prompt=prompt,
@@ -4668,8 +4666,8 @@ def image_generation(  # noqa: PLR0915
                     custom_handler = item["custom_handler"]
 
             if custom_handler is None:
-                raise ValueError(
-                    f"Unable to map your input to a model. Check your input - {args}"
+                raise LiteLLMUnknownProvider(
+                    model=model, custom_llm_provider=custom_llm_provider
                 )
 
             ## ROUTE LLM CALL ##
@@ -5049,8 +5047,7 @@ def transcription(
         )
     elif (
         custom_llm_provider == "openai"
-        or custom_llm_provider == "groq"
-        or custom_llm_provider == "fireworks_ai"
+        or custom_llm_provider in litellm.openai_compatible_providers
     ):
         api_base = (
             api_base
@@ -5208,7 +5205,10 @@ def speech(
         custom_llm_provider=custom_llm_provider,
     )
     response: Optional[HttpxBinaryResponseContent] = None
-    if custom_llm_provider == "openai":
+    if (
+        custom_llm_provider == "openai"
+        or custom_llm_provider in litellm.openai_compatible_providers
+    ):
         if voice is None or not (isinstance(voice, str)):
             raise litellm.BadRequestError(
                 message="'voice' is required to be passed as a string for OpenAI TTS",

@@ -65,8 +65,8 @@ const sidebars = {
           items: [
             "proxy/user_keys",
             "proxy/clientside_auth",
-            "proxy/response_headers",
             "proxy/request_headers",
+            "proxy/response_headers",
           ],
         },
         {
@@ -303,6 +303,7 @@ const sidebars = {
             "pass_through/vertex_ai",
             "pass_through/google_ai_studio",
             "pass_through/cohere",
+            "pass_through/openai_passthrough",
             "pass_through/anthropic_completion",
             "pass_through/bedrock",
             "pass_through/assembly_ai",
@@ -444,6 +445,7 @@ const sidebars = {
             "projects/smolagents",
             "projects/Docq.AI",
             "projects/OpenInterpreter",
+            "projects/Elroy",
             "projects/dbally",
             "projects/FastREPL",
             "projects/PROMPTMETHEUS",

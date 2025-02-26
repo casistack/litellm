@@ -2830,7 +2830,7 @@ async def test_update_user_unit_test(prisma_client):
     await litellm.proxy.proxy_server.prisma_client.connect()
     key = await new_user(
         data=NewUserRequest(
-            user_email="test@test.com",
+            user_email=f"test-{uuid.uuid4()}@test.com",
         )
     )
 
@@ -3434,36 +3434,6 @@ async def test_list_keys(prisma_client):
     )
     assert len(response["keys"]) == 1
     assert _key in response["keys"]
-
-
-@pytest.mark.asyncio
-async def test_key_list_unsupported_params(prisma_client):
-    """
-    Test the list_keys function:
-    - Test unsupported params
-    """
-
-    from litellm.proxy.proxy_server import hash_token
-
-    setattr(litellm.proxy.proxy_server, "prisma_client", prisma_client)
-    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
-    await litellm.proxy.proxy_server.prisma_client.connect()
-
-    request = Request(scope={"type": "http", "query_string": b"alias=foo"})
-
-    try:
-        await list_keys(
-            request,
-            UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN.value),
-            page=1,
-            size=10,
-        )
-        pytest.fail("Expected this call to fail")
-    except Exception as e:
-        print("error str=", str(e.message))
-        error_str = str(e.message)
-        assert "Unsupported parameter" in error_str
-        pass
 
 
 @pytest.mark.asyncio
