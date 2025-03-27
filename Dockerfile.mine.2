@@ -2,9 +2,9 @@
 # Build Arguments
 # =============================================
 # Base image for building
-ARG LITELLM_BUILD_IMAGE=python:3.13.1-slim
+ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/python:latest-dev
 # Runtime image
-ARG LITELLM_RUNTIME_IMAGE=python:3.13.1-slim
+ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/python:latest-dev
 
 # =============================================
 # Builder Stage
@@ -15,9 +15,8 @@ FROM $LITELLM_BUILD_IMAGE as builder
 WORKDIR /app
 
 # Install system build dependencies
-RUN apt-get clean && apt-get update && \
-    apt-get install -y gcc python3-dev && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk update && \
+    apk add --no-cache gcc python3-dev openssl openssl-dev
 
 # Install Python build tools
 RUN pip install --upgrade pip && \
@@ -56,10 +55,8 @@ RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 FROM $LITELLM_RUNTIME_IMAGE as runtime
 
 # Security updates
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y nano && \
-    rm -rf /var/lib/apt/lists/* 
+RUN apk update && \
+    apk add --no-cache openssl nano
 
 # Setup application directory
 WORKDIR /app
