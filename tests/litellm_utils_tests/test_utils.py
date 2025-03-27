@@ -477,6 +477,25 @@ def test_supports_function_calling(model, expected_bool):
         pytest.fail(f"Error occurred: {e}")
 
 
+@pytest.mark.parametrize(
+    "model, expected_bool",
+    [
+        ("gpt-4o-mini-search-preview", True),
+        ("openai/gpt-4o-mini-search-preview", True),
+        ("gpt-4o-search-preview", True),
+        ("openai/gpt-4o-search-preview", True),
+        ("groq/deepseek-r1-distill-llama-70b", False),
+        ("groq/llama-3.3-70b-versatile", False),
+        ("codestral/codestral-latest", False),
+    ],
+)
+def test_supports_web_search(model, expected_bool):
+    try:
+        assert litellm.supports_web_search(model=model) == expected_bool
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
 def test_get_max_token_unit_test():
     """
     More complete testing in `test_completion_cost.py`
@@ -1094,6 +1113,26 @@ def test_is_base64_encoded_2():
     [
         ([{"role": "user", "content": "hi"}], True),
         ([{"role": "user", "content": [{"type": "text", "text": "hi"}]}], True),
+        (
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "file",
+                            "file": {
+                                "file_id": "123",
+                                "file_name": "test.txt",
+                                "file_size": 100,
+                                "file_type": "text/plain",
+                                "file_url": "https://example.com/test.txt",
+                            },
+                        }
+                    ],
+                }
+            ],
+            True,
+        ),
         (
             [
                 {
@@ -2035,3 +2074,13 @@ def test_delta_object():
     assert delta.role == "user"
     assert not hasattr(delta, "thinking_blocks")
     assert not hasattr(delta, "reasoning_content")
+
+
+def test_get_provider_audio_transcription_config():
+    from litellm.utils import ProviderConfigManager
+    from litellm.types.utils import LlmProviders
+
+    for provider in LlmProviders:
+        config = ProviderConfigManager.get_provider_audio_transcription_config(
+            model="whisper-1", provider=provider
+        )

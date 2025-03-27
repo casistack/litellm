@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { jwtDecode } from "jwt-decode";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { defaultOrg } from "@/components/common_components/default_org";
-import { Team } from "@/components/key_team_helpers/key_list";
+import { KeyResponse, Team } from "@/components/key_team_helpers/key_list";
 import Navbar from "@/components/navbar";
 import UserDashboard from "@/components/user_dashboard";
 import ModelDashboard from "@/components/model_dashboard";
@@ -215,6 +215,7 @@ export default function CreateKeyPage() {
               userEmail={userEmail}
               setProxySettings={setProxySettings}
               proxySettings={proxySettings}
+              accessToken={accessToken}
             />
             <div className="flex flex-1 overflow-auto">
               <div className="mt-8">
@@ -309,9 +310,7 @@ export default function CreateKeyPage() {
                 <BudgetPanel accessToken={accessToken} />
               ) : page == "guardrails" ? (
                 <GuardrailsPanel accessToken={accessToken} />
-              ) : page == "transform-request" ? (
-                <TransformRequestPanel accessToken={accessToken} />
-              ) : page == "general-settings" ? (
+              ): page == "general-settings" ? (
                 <GeneralSettings
                   userID={userID}
                   userRole={userRole}
@@ -345,6 +344,7 @@ export default function CreateKeyPage() {
                   userRole={userRole}
                   token={token}
                   accessToken={accessToken}
+                  allTeams={teams as Team[] ?? []}
                 />
               ) : (
                 <Usage

@@ -32,6 +32,7 @@ interface AllKeysTableProps {
   userRole: string | null;
   organizations: Organization[] | null;
   setCurrentOrg: React.Dispatch<React.SetStateAction<Organization | null>>;
+  refresh?: () => void;
 }
 
 // Define columns similar to our logs table
@@ -98,6 +99,7 @@ export function AllKeysTable({
   userRole,
   organizations,
   setCurrentOrg,
+  refresh,
 }: AllKeysTableProps) {
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
   const [userList, setUserList] = useState<UserResponse[]>([]);
@@ -130,6 +132,22 @@ export function AllKeysTable({
       fetchUserList();
     }
   }, [accessToken, keys]);
+
+  // Add a useEffect to call refresh when a key is created
+  useEffect(() => {
+    if (refresh) {
+      const handleStorageChange = () => {
+        refresh();
+      };
+      
+      // Listen for storage events that might indicate a key was created
+      window.addEventListener('storage', handleStorageChange);
+      
+      return () => {
+        window.removeEventListener('storage', handleStorageChange);
+      };
+    }
+  }, [refresh]);
 
   const columns: ColumnDef<KeyResponse>[] = [
     {
@@ -325,14 +343,15 @@ export function AllKeysTable({
         if (!allOrganizations || allOrganizations.length === 0) return [];
         
         const filteredOrgs = allOrganizations.filter(org => 
-          org.organization_id.toLowerCase().includes(searchText.toLowerCase()) || 
-          (org.organization_name && org.organization_name.toLowerCase().includes(searchText.toLowerCase()))
+          org.organization_id?.toLowerCase().includes(searchText.toLowerCase()) ?? false
         );
         
-        return filteredOrgs.map(org => ({
-          label: `${org.organization_name || 'Unknown'} (${org.organization_id})`,
-          value: org.organization_id
-        }));
+        return filteredOrgs
+          .filter(org => org.organization_id !== null && org.organization_id !== undefined)
+          .map(org => ({
+            label: `${org.organization_id || 'Unknown'} (${org.organization_id})`,
+            value: org.organization_id as string
+          }));
       }
     },
   ];
@@ -385,8 +404,8 @@ export function AllKeysTable({
           <div className="h-[75vh] overflow-auto">
             
             <DataTable
-              columns={columns.filter(col => col.id !== 'expander')}
-              data={filteredKeys}
+              columns={columns.filter(col => col.id !== 'expander') as any}
+              data={filteredKeys as any}
               isLoading={isLoading}
               getRowCanExpand={() => false}
               renderSubComponent={() => <></>}
