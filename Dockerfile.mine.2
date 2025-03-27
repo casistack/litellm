@@ -14,6 +14,9 @@ FROM $LITELLM_BUILD_IMAGE as builder
 # Set the working directory
 WORKDIR /app
 
+# Switch to root user for permission to use apk
+USER root
+
 # Install system build dependencies
 RUN apk update && \
     apk add --no-cache gcc python3-dev openssl openssl-dev
@@ -53,6 +56,9 @@ RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 # Runtime Stage
 # =============================================
 FROM $LITELLM_RUNTIME_IMAGE as runtime
+
+# Switch to root user for permission to use apk
+USER root
 
 # Security updates
 RUN apk update && \
