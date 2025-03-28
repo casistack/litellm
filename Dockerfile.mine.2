@@ -62,7 +62,7 @@ USER root
 
 # Security updates
 RUN apk update && \
-    apk add --no-cache openssl nano
+    apk add --no-cache openssl nano jq curl
 
 # Setup application directory
 WORKDIR /app
