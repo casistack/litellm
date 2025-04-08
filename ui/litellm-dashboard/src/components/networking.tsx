@@ -3,6 +3,7 @@
  */
 import { all_admin_roles } from "@/utils/roles";
 import { message } from "antd";
+import { TagNewRequest, TagUpdateRequest, TagDeleteRequest, TagInfoRequest, TagListResponse, TagInfoResponse } from "./tag_management/types";
 
 const isLocal = process.env.NODE_ENV === "development";
 export const proxyBaseUrl = isLocal ? "http://localhost:4000" : null;
@@ -528,6 +529,8 @@ export const userCreateCall = async (
       delete formValues.description;
       formValues.metadata = JSON.stringify(formValues.metadata);
     }
+
+    formValues.auto_create_key = false;
     // if formValues.metadata is not undefined, make it a valid dict
     if (formValues.metadata) {
       console.log("formValues.metadata:", formValues.metadata);
@@ -4081,6 +4084,229 @@ export const updateInternalUserSettings = async (accessToken: string, settings: 
     return data;
   } catch (error) {
     console.error("Failed to update internal user settings:", error);
+    throw error;
+  }
+};
+
+
+export const listMCPTools = async (accessToken: string) => {
+  try {
+    // Construct base URL
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/mcp/tools/list`
+      : `/mcp/tools/list`;
+
+    console.log("Fetching MCP tools from:", url);
+    
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("Fetched MCP tools:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch MCP tools:", error);
+    throw error;
+  }
+};
+
+
+export const callMCPTool = async (accessToken: string, toolName: string, toolArguments: Record<string, any>) => {
+  try {
+    // Construct base URL
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/mcp/tools/call`
+      : `/mcp/tools/call`;
+
+    console.log("Calling MCP tool:", toolName, "with arguments:", toolArguments);
+    
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: toolName,
+        arguments: toolArguments,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      handleError(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("MCP tool call response:", data);
+    return data;
+  } catch (error) {
+    console.error("Failed to call MCP tool:", error);
+    throw error;
+  }
+};
+
+
+export const tagCreateCall = async (
+  accessToken: string,
+  formValues: TagNewRequest
+): Promise<void> => {
+  try {
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/tag/new`
+      : `/tag/new`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(formValues),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      await handleError(errorData);
+      return;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error creating tag:", error);
+    throw error;
+  }
+};
+
+export const tagUpdateCall = async (
+  accessToken: string,
+  formValues: TagUpdateRequest
+): Promise<void> => {
+  try {
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/tag/update`
+      : `/tag/update`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(formValues),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      await handleError(errorData);
+      return;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error updating tag:", error);
+    throw error;
+  }
+};
+
+export const tagInfoCall = async (
+  accessToken: string,
+  tagNames: string[]
+): Promise<TagInfoResponse> => {
+  try {
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/tag/info`
+      : `/tag/info`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ names: tagNames }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      await handleError(errorData);
+      return {};
+    }
+
+    const data = await response.json();
+    return data as TagInfoResponse;
+  } catch (error) {
+    console.error("Error getting tag info:", error);
+    throw error;
+  }
+};
+
+export const tagListCall = async (accessToken: string): Promise<TagListResponse> => {
+  try {
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/tag/list`
+      : `/tag/list`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      await handleError(errorData);
+      return {};
+    }
+
+    const data = await response.json();
+    return data as TagListResponse;
+  } catch (error) {
+    console.error("Error listing tags:", error);
+    throw error;
+  }
+};
+
+export const tagDeleteCall = async (
+  accessToken: string,
+  tagName: string
+): Promise<void> => {
+  try {
+    let url = proxyBaseUrl 
+      ? `${proxyBaseUrl}/tag/delete`
+      : `/tag/delete`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ name: tagName }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      await handleError(errorData);
+      return;
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error deleting tag:", error);
     throw error;
   }
 };
