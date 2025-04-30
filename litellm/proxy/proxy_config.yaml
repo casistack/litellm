@@ -1,13 +1,11 @@
 model_list:
-  - model_name: openai/*
+  - model_name: computer-user-agent
     litellm_params:
-      model: openai/*
-  - model_name: anthropic/*
-    litellm_params:
-      model: anthropic/*
-  - model_name: gemini/*
-    litellm_params:
-      model: gemini/*
-litellm_settings:
-  drop_params: true
-      
+      model: azure/computer-use-preview
+      truncation: auto
+      api_key: os.environ/AZURE_RESPONSES_OPENAI_API_KEY
+      api_base: os.environ/AZURE_RESPONSES_OPENAI_ENDPOINT
+      api_version: os.environ/AZURE_RESPONSES_OPENAI_API_VERSION
+general_settings:
+  store_prompts_in_spend_logs: true
+  block_robots: true
