@@ -573,3 +573,33 @@ def get_tool_call_names(tools: List[ChatCompletionToolParam]) -> List[str]:
             if tool_call_name:
                 tool_call_names.append(tool_call_name)
     return tool_call_names
+
+
+def is_function_call(optional_params: dict) -> bool:
+    """
+    Checks if the optional params contain the function call
+    """
+    if "functions" in optional_params and optional_params.get("functions"):
+        return True
+    return False
+
+
+def get_file_ids_from_messages(messages: List[AllMessageValues]) -> List[str]:
+    """
+    Gets file ids from messages
+    """
+    file_ids = []
+    for message in messages:
+        if message.get("role") == "user":
+            content = message.get("content")
+            if content:
+                if isinstance(content, str):
+                    continue
+                for c in content:
+                    if c["type"] == "file":
+                        file_object = cast(ChatCompletionFileObject, c)
+                        file_object_file_field = file_object["file"]
+                        file_id = file_object_file_field.get("file_id")
+                        if file_id:
+                            file_ids.append(file_id)
+    return file_ids

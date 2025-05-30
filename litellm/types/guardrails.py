@@ -28,6 +28,7 @@ class SupportedGuardrailIntegrations(Enum):
     PRESIDIO = "presidio"
     HIDE_SECRETS = "hide-secrets"
     AIM = "aim"
+    PANGEA = "pangea"
 
 
 class Role(Enum):
@@ -318,7 +319,6 @@ class LakeraV2GuardrailConfigModel(BaseModel):
         description="Whether to include developer information in the response",
     )
 
-
 class LitellmParams(
     PresidioConfigModel,
     BedrockGuardrailConfigModel,
@@ -365,6 +365,16 @@ class LitellmParams(
         description="Will mask response content if guardrail makes any changes",
     )
 
+    # pangea params
+    pangea_input_recipe: Optional[str] = Field(
+        default=None,
+        description="Recipe for input (LLM request)"
+    )
+
+    pangea_output_recipe: Optional[str] = Field(
+        default=None,
+        description="Recipe for output (LLM response)"
+    )
 
 class Guardrail(TypedDict, total=False):
     guardrail_id: Optional[str]
@@ -390,12 +400,12 @@ class DynamicGuardrailParams(TypedDict):
     extra_body: Dict[str, Any]
 
 
-class GuardrailLiteLLMParamsResponse(BaseModel):
+class GuardrailInfoLiteLLMParamsResponse(BaseModel):
     """The returned LiteLLM Params object for /guardrails/list"""
 
     guardrail: str
     mode: Union[str, List[str]]
-    default_on: bool = Field(default=False)
+    default_on: Optional[bool] = False
     pii_entities_config: Optional[Dict[PiiEntityType, PiiAction]] = None
 
     def __init__(self, **kwargs):
@@ -409,10 +419,11 @@ class GuardrailLiteLLMParamsResponse(BaseModel):
 class GuardrailInfoResponse(BaseModel):
     guardrail_id: Optional[str] = None
     guardrail_name: str
-    litellm_params: GuardrailLiteLLMParamsResponse
-    guardrail_info: Optional[Dict]
+    litellm_params: Optional[GuardrailInfoLiteLLMParamsResponse] = None
+    guardrail_info: Optional[Dict] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    guardrail_definition_location: Literal["config", "db"] = "config"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
