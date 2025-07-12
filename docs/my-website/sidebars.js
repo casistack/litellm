@@ -34,10 +34,12 @@ const sidebars = {
         ...[
           "proxy/guardrails/aim_security",
           "proxy/guardrails/aporia_api",
+          "proxy/guardrails/azure_content_guardrail",
           "proxy/guardrails/bedrock",
           "proxy/guardrails/lasso_security",
           "proxy/guardrails/guardrails_ai",
           "proxy/guardrails/lakera_ai",
+          "proxy/guardrails/openai_moderation",
           "proxy/guardrails/pangea",
           "proxy/guardrails/pii_masking_v2",
           "proxy/guardrails/panw_prisma_airs",
@@ -142,6 +144,7 @@ const sidebars = {
             "proxy/token_auth",
             "proxy/service_accounts",
             "proxy/access_control",
+            "proxy/cli_sso",
             "proxy/custom_auth",
             "proxy/ip_address",
             "proxy/email",
@@ -255,6 +258,7 @@ const sidebars = {
         "embedding/supported_embedding",
         "anthropic_unified",
         "mcp",
+        "generateContent",
         {
           type: "category",
           label: "/images",
@@ -354,12 +358,12 @@ const sidebars = {
           ]
         },
         "providers/azure_ai",
-        "providers/aiml",
         {
           type: "category",
           label: "Vertex AI",
           items: [
             "providers/vertex",
+            "providers/vertex_partner",
             "providers/vertex_image",
           ]
         },
@@ -414,7 +418,6 @@ const sidebars = {
         "providers/galadriel",
         "providers/topaz",
         "providers/groq",
-        "providers/github",
         "providers/deepseek",
         "providers/elevenlabs",
         "providers/fireworks_ai",
@@ -423,8 +426,11 @@ const sidebars = {
         "providers/llamafile",
         "providers/infinity",
         "providers/xinference",
+        "providers/aiml",
         "providers/cloudflare_workers",
         "providers/deepinfra",
+        "providers/github",
+        "providers/github_copilot",
         "providers/ai21",
         "providers/nlp_cloud",
         "providers/replicate",
@@ -440,7 +446,8 @@ const sidebars = {
         "providers/petals",
         "providers/snowflake",
         "providers/featherless_ai",
-        "providers/nebius"
+        "providers/nebius",
+        "providers/dashscope"
       ],
     },
     {
@@ -611,6 +618,11 @@ const sidebars = {
         "proxy/customer_routing",
         "proxy_server",
       ],
+    },
+    {
+      type: "doc",
+      id: "provider_registration/index",
+      label: "Integrate as a Model Provider",
     },
     "troubleshoot",
   ],
