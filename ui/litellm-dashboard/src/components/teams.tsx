@@ -69,11 +69,10 @@ import {
 import { CogIcon } from "@heroicons/react/outline";
 import AvailableTeamsPanel from "@/components/team/available_teams";
 import VectorStoreSelector from "./vector_store_management/VectorStoreSelector";
-import PremiumVectorStoreSelector from "./common_components/PremiumVectorStoreSelector";
-import PremiumMCPSelector from "./common_components/PremiumMCPSelector";
 import PremiumLoggingSettings from "./common_components/PremiumLoggingSettings";
 import type { KeyResponse, Team } from "./key_team_helpers/key_list";
 import { formatNumberWithCommas } from "../utils/dataUtils";
+import MCPServerSelector from "./mcp_server_management/MCPServerSelector";
 
 interface TeamProps {
   teams: Team[] | null;
@@ -567,14 +566,17 @@ const Teams: React.FC<TeamProps> = ({
                   if (teams == null) {
                     return teams;
                   }
-
-                  return teams.map((team) => {
+                  const updated = teams.map((team) => {
                     if (data.team_id === team.team_id) {
                       return updateExistingKeys(team, data);
                     }
-
                     return team;
                   });
+                  // Minimal fix: refresh the full team list after an update
+                  if (accessToken) {
+                    fetchTeams(accessToken, userID, userRole, currentOrg, setTeams);
+                  }
+                  return updated;
                 });
               }}
               onClose={() => {
@@ -1337,15 +1339,11 @@ const Teams: React.FC<TeamProps> = ({
                         <NumericalInput step={0.01} precision={2} width={200} />
                       </Form.Item>
                       <Form.Item
-                        label="Team Member Key Duration"
+                        label="Team Member Key Duration (eg: 1d, 1mo)"
                         name="team_member_key_duration"
-                        tooltip="Set a limit to the duration of a team member's key."
+                        tooltip="Set a limit to the duration of a team member's key. Format: 30s (seconds), 30m (minutes), 30h (hours), 30d (days), 1mo (month)"
                       >
-                        <Select2 defaultValue={null} placeholder="n/a">
-                          <Select2.Option value="1d">1 day</Select2.Option>
-                          <Select2.Option value="1w">1 week</Select2.Option>
-                          <Select2.Option value="1mo">1 month</Select2.Option>
-                        </Select2>
+                        <TextInput placeholder="e.g., 30d" />
                       </Form.Item>
                       <Form.Item
                         label="Metadata"
@@ -1401,8 +1399,8 @@ const Teams: React.FC<TeamProps> = ({
                         className="mt-8"
                         help="Select vector stores this team can access. Leave empty for access to all vector stores"
                       >
-                        <PremiumVectorStoreSelector
-                          onChange={(values) =>
+                        <VectorStoreSelector
+                          onChange={(values: string[]) =>
                             form.setFieldValue(
                               "allowed_vector_store_ids",
                               values
@@ -1411,7 +1409,6 @@ const Teams: React.FC<TeamProps> = ({
                           value={form.getFieldValue("allowed_vector_store_ids")}
                           accessToken={accessToken || ""}
                           placeholder="Select vector stores (optional)"
-                          premiumUser={premiumUser}
                         />
                       </Form.Item>
                       <Form.Item
@@ -1429,8 +1426,8 @@ const Teams: React.FC<TeamProps> = ({
                         className="mt-8"
                         help="Select MCP servers or access groups this team can access. "
                       >
-                        <PremiumMCPSelector
-                          onChange={(val) =>
+                        <MCPServerSelector
+                          onChange={(val: any) =>
                             form.setFieldValue(
                               "allowed_mcp_servers_and_groups",
                               val
@@ -1441,7 +1438,6 @@ const Teams: React.FC<TeamProps> = ({
                           )}
                           accessToken={accessToken || ""}
                           placeholder="Select MCP servers or access groups (optional)"
-                          premiumUser={premiumUser}
                         />
                       </Form.Item>
                     </AccordionBody>

@@ -58,6 +58,8 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
   const [filteredServers, setFilteredServers] = useState<MCPServer[]>([])
   const [isModalVisible, setModalVisible] = useState(false)
 
+  const isInternalUser = userRole === "Internal User";
+
   // Get unique teams from all servers
   const uniqueTeams = React.useMemo(() => {
     if (!mcpServers) return []
@@ -80,7 +82,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
   // Get unique MCP access groups from all servers
   const uniqueMcpAccessGroups = React.useMemo(() => {
     if (!mcpServers) return []
-    return Array.from(new Set(mcpServers.flatMap((server) => server.mcp_access_groups)))
+    return Array.from(new Set(mcpServers.flatMap((server) => server.mcp_access_groups).filter((group): group is string => group != null)))
   }, [mcpServers])
 
   // Handle team filter change
@@ -168,6 +170,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
   }
 
   if (!accessToken || !userRole || !userID) {
+    console.log("Missing required authentication parameters", { accessToken, userRole, userID });
     return <div className="p-6 text-center text-gray-500">Missing required authentication parameters.</div>
   }
 
@@ -177,6 +180,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
         mcpServer={
           filteredServers.find((server: MCPServer) => server.server_id === selectedServerId) || {
             server_id: "",
+            server_name: "",
             alias: "",
             url: "",
             transport: "",
@@ -198,6 +202,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
         accessToken={accessToken}
         userID={userID}
         userRole={userRole}
+        availableAccessGroups={uniqueMcpAccessGroups}
       />
     ) : (
       <div className="w-full h-full">
@@ -210,7 +215,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
                   <Option value="all">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                      <span className="font-medium">All Servers</span>
+                      <span className="font-medium">{isInternalUser ? "All Available Servers" : "All Servers"}</span>
                     </div>
                   </Option>
                   <Option value="personal">
@@ -281,6 +286,7 @@ const MCPServers: React.FC<MCPServerProps> = ({ accessToken, userRole, userID })
         onCreateSuccess={handleCreateSuccess}
         isModalVisible={isModalVisible}
         setModalVisible={setModalVisible}
+        availableAccessGroups={uniqueMcpAccessGroups}
       />
       <Title>MCP Servers</Title>
       <Text className="text-tremor-content mt-2">Configure and manage your MCP servers</Text>

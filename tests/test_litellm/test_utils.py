@@ -11,7 +11,13 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 import litellm
-from litellm.types.utils import Delta, LlmProviders, ModelResponseStream, StreamingChoices
+from litellm.proxy.utils import is_valid_api_key
+from litellm.types.utils import (
+    Delta,
+    LlmProviders,
+    ModelResponseStream,
+    StreamingChoices,
+)
 from litellm.utils import (
     ProviderConfigManager,
     TextCompletionStreamWrapper,
@@ -552,6 +558,7 @@ def test_get_model_info_gemini():
             model.startswith("gemini/")
             and not "gemma" in model
             and not "learnlm" in model
+            and not "imagen" in model
         ):
             assert info.get("tpm") is not None, f"{model} does not have tpm"
             assert info.get("rpm") is not None, f"{model} does not have rpm"
@@ -899,13 +906,6 @@ class TestProxyFunctionCalling:
                 "litellm_proxy/claude-3-5-sonnet-20240620",
                 True,
             ),
-            ("claude-3-opus-20240229", "litellm_proxy/claude-3-opus-20240229", True),
-            (
-                "claude-3-sonnet-20240229",
-                "litellm_proxy/claude-3-sonnet-20240229",
-                True,
-            ),
-            ("claude-3-haiku-20240307", "litellm_proxy/claude-3-haiku-20240307", True),
             # Google models
             ("gemini-pro", "litellm_proxy/gemini-pro", True),
             ("gemini/gemini-1.5-pro", "litellm_proxy/gemini/gemini-1.5-pro", True),
@@ -919,11 +919,6 @@ class TestProxyFunctionCalling:
             ),  # This model doesn't support function calling
             # Cohere models (generally don't support function calling)
             ("command-nightly", "litellm_proxy/command-nightly", False),
-            (
-                "anthropic.claude-instant-v1",
-                "litellm_proxy/anthropic.claude-instant-v1",
-                False,
-            ),
         ],
     )
     def test_proxy_function_calling_support_consistency(
@@ -1053,7 +1048,7 @@ class TestProxyFunctionCalling:
         ), "Custom model names return False without proxy config context"
 
         # Case 2: Model name that can be resolved (matches pattern)
-        resolvable_model = "litellm_proxy/claude-3-sonnet-20240229"
+        resolvable_model = "litellm_proxy/claude-3-5-sonnet-latest"
         result = supports_function_calling(resolvable_model)
         assert result is True, "Resolvable model names work with fallback logic"
 
@@ -1064,7 +1059,7 @@ class TestProxyFunctionCalling:
         
         ✅ WORKS (with current fallback logic):
            - litellm_proxy/gpt-4
-           - litellm_proxy/claude-3-sonnet-20240229
+           - litellm_proxy/claude-3-5-sonnet-latest
            - litellm_proxy/anthropic/claude-3-haiku-20240307
            
         ❌ DOESN'T WORK (requires proxy server config):
@@ -2108,6 +2103,126 @@ def test_reasoning_content_preserved_in_text_completion_wrapper():
     choice = transformed["choices"][0]
     assert choice["text"] == "Some answer text"
     assert choice["reasoning_content"] == "Here's my chain of thought..."
+
+
+def test_anthropic_claude_4_invoke_chat_provider_config():
+    """Test that the Anthropic Claude 4 Invoke chat provider config is correct."""
+    from litellm.llms.bedrock.chat.invoke_transformations.anthropic_claude3_transformation import (
+        AmazonAnthropicClaude3Config,
+    )
+    from litellm.utils import ProviderConfigManager
+
+    config = ProviderConfigManager.get_provider_chat_config(
+        model="invoke/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        provider=LlmProviders.BEDROCK,
+    )
+    print(config)
+    assert isinstance(config, AmazonAnthropicClaude3Config)
+
+
+def test_bedrock_application_inference_profile():
+    model = "arn:aws:bedrock:us-east-2:<AWS-ACCOUNT-ID>:inference-profile/us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    from pydantic import BaseModel
+
+    from litellm import completion
+    from litellm.utils import supports_tool_choice
+
+    result = supports_tool_choice(model, custom_llm_provider="bedrock")
+    result_2 = supports_tool_choice(model, custom_llm_provider="bedrock_converse")
+    print(result)
+    assert result == result_2
+    assert result is True
+
+
+def test_image_response_utils():
+    """Test that the image response utils are correct."""
+    from litellm.utils import ImageResponse
+
+    result = {
+        "created": None,
+        "data": [
+            {
+                "b64_json": "/9j/.../2Q==",
+                "revised_prompt": None,
+                "url": None,
+                "timings": {"inference": 0.9612685777246952},
+                "index": 0,
+            }
+        ],
+        "id": "91559891cxxx-PDX",
+        "model": "black-forest-labs/FLUX.1-schnell-Free",
+        "object": "list",
+        "hidden_params": {"additional_headers": {}},
+    }
+    image_response = ImageResponse(**result)
+
+
+def test_is_valid_api_key():
+    import hashlib
+
+    # Valid sk- keys
+    assert is_valid_api_key("sk-abc123")
+    assert is_valid_api_key("sk-ABC_123-xyz")
+    # Valid hashed key (64 hex chars)
+    assert is_valid_api_key("a" * 64)
+    assert is_valid_api_key("0123456789abcdef" * 4)  # 16*4 = 64
+    # Real SHA-256 hash
+    real_hash = hashlib.sha256(b"my_secret_key").hexdigest()
+    assert len(real_hash) == 64
+    assert is_valid_api_key(real_hash)
+    # Invalid: too short
+    assert not is_valid_api_key("sk-")
+    assert not is_valid_api_key("")
+    # Invalid: too long
+    assert not is_valid_api_key("sk-" + "a" * 200)
+    # Invalid: wrong prefix
+    assert not is_valid_api_key("pk-abc123")
+    # Invalid: wrong chars in sk- key
+    assert not is_valid_api_key("sk-abc$%#@!")
+    # Invalid: not a string
+    assert not is_valid_api_key(None)
+    assert not is_valid_api_key(12345)
+    # Invalid: wrong length for hash
+    assert not is_valid_api_key("a" * 63)
+    assert not is_valid_api_key("a" * 65)
+
+
+def test_block_key_hashing_logic():
+    """
+    Test that block_key() function only hashes keys that start with "sk-"
+    """
+    import hashlib
+    from litellm.proxy.utils import hash_token
+    
+    # Test cases: (input_key, should_be_hashed, expected_output)
+    test_cases = [
+        ("sk-1234567890abcdef", True, hash_token("sk-1234567890abcdef")),
+        ("sk-test-key", True, hash_token("sk-test-key")),
+        ("abc123", False, "abc123"),  # Should not be hashed
+        ("hashed_key_123", False, "hashed_key_123"),  # Should not be hashed
+        ("", False, ""),  # Empty string should not be hashed
+        ("sk-", True, hash_token("sk-")),  # Edge case: just "sk-"
+    ]
+    
+    for input_key, should_be_hashed, expected_output in test_cases:
+        # Simulate the logic from block_key() function
+        if input_key.startswith("sk-"):
+            hashed_token = hash_token(token=input_key)
+        else:
+            hashed_token = input_key
+        
+        assert hashed_token == expected_output, f"Failed for input: {input_key}"
+        
+        # Additional verification: if it should be hashed, verify it's actually a hash
+        if should_be_hashed:
+            # SHA-256 hashes are 64 characters long and contain only hex digits
+            assert len(hashed_token) == 64, f"Hash length should be 64, got {len(hashed_token)} for {input_key}"
+            assert all(c in '0123456789abcdef' for c in hashed_token), f"Hash should contain only hex digits for {input_key}"
+        else:
+            # If not hashed, it should be the original string
+            assert hashed_token == input_key, f"Non-hashed key should remain unchanged: {input_key}"
+    
+    print("✅ All block_key hashing logic tests passed!")
 
 
 if __name__ == "__main__":

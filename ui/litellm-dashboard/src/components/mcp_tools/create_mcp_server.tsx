@@ -8,6 +8,7 @@ import MCPServerCostConfig from "./mcp_server_cost_config"
 import MCPConnectionStatus from "./mcp_connection_status"
 import StdioConfiguration from "./StdioConfiguration"
 import { isAdminRole } from "@/utils/roles"
+import { validateMCPServerUrl, validateMCPServerName } from "./utils"
 
 const asset_logos_folder = "../ui/assets/logos/"
 export const mcpLogoImg = `${asset_logos_folder}mcp_logo.png`
@@ -18,6 +19,7 @@ interface CreateMCPServerProps {
   onCreateSuccess: (newMcpServer: MCPServer) => void
   isModalVisible: boolean
   setModalVisible: (visible: boolean) => void
+  availableAccessGroups: string[]
 }
 
 const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
@@ -26,14 +28,16 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
   onCreateSuccess,
   isModalVisible,
   setModalVisible,
+  availableAccessGroups,
 }) => {
   const [form] = Form.useForm()
   const [isLoading, setIsLoading] = useState(false)
   const [costConfig, setCostConfig] = useState<MCPServerCostInfo>({})
-  const [mcpAccessGroups, setMcpAccessGroups] = useState<string[]>([])
   const [formValues, setFormValues] = useState<Record<string, any>>({})
+  const [aliasManuallyEdited, setAliasManuallyEdited] = useState(false)
   const [tools, setTools] = useState<any[]>([])
   const [transportType, setTransportType] = useState<string>("sse")
+  const [searchValue, setSearchValue] = useState<string>("")
 
   const handleCreate = async (formValues: Record<string, any>) => {
     setIsLoading(true)
@@ -62,8 +66,8 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
               actualConfig = stdioConfig.mcpServers[firstServerName]
 
               // If no alias is provided, use the server name from the JSON
-              if (!formValues.alias) {
-                formValues.alias = firstServerName.replace(/-/g, "_") // Replace hyphens with underscores
+              if (!formValues.server_name) {
+                formValues.server_name = firstServerName.replace(/-/g, "_") // Replace hyphens with underscores
               }
             }
           }
@@ -88,11 +92,12 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
         // Remove the raw stdio_config field as we've extracted its components
         stdio_config: undefined,
         mcp_info: {
-          server_name: formValues.alias || formValues.url,
+          server_name: formValues.server_name || formValues.url,
           description: formValues.description,
           mcp_server_cost_info: Object.keys(costConfig).length > 0 ? costConfig : null,
         },
         mcp_access_groups: accessGroups,
+        alias: formValues.alias,
       }
 
       console.log(`Payload: ${JSON.stringify(payload)}`)
@@ -131,6 +136,44 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
       form.setFieldsValue({ command: undefined, args: undefined, env: undefined })
     }
   }
+
+  // Generate options with existing groups and potential new group
+  const getAccessGroupOptions = () => {
+    const existingOptions = availableAccessGroups.map((group: string) => ({
+      value: group,
+      label: (
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+          <span className="font-medium">{group}</span>
+        </div>
+      ),
+    }))
+
+    // If search value doesn't match any existing group and is not empty, add "create new group" option
+    if (searchValue && !availableAccessGroups.some(group => group.toLowerCase().includes(searchValue.toLowerCase()))) {
+      existingOptions.push({
+        value: searchValue,
+        label: (
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+            <span className="font-medium">{searchValue}</span>
+            <span className="text-gray-400 text-xs ml-1">create new group</span>
+          </div>
+        ),
+      })
+    }
+
+    return existingOptions
+  }
+
+  // Auto-populate alias from server_name unless manually edited
+  React.useEffect(() => {
+    if (!aliasManuallyEdited && formValues.server_name) {
+      const normalized = formValues.server_name.replace(/\s+/g, "_")
+      form.setFieldsValue({ alias: normalized })
+      setFormValues((prev) => ({ ...prev, alias: normalized }))
+    }
+  }, [formValues.server_name])
 
   // rendering
   if (!isAdminRole(userRole)) {
@@ -183,13 +226,34 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
                   </Tooltip>
                 </span>
               }
-              name="alias"
+              name="server_name"
               rules={[
                 { required: false, message: "Please enter a server name" },
+                { validator: (_, value) => validateMCPServerName(value) },
+              ]}
+            >
+              <TextInput
+                placeholder="e.g., GitHub_MCP, Zapier_MCP, etc."
+                className="rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+              />
+            </Form.Item>
+
+            <Form.Item
+              label={
+                <span className="text-sm font-medium text-gray-700 flex items-center">
+                  Alias
+                  <Tooltip title="A short, unique identifier for this server. Defaults to the server name with spaces replaced by underscores.">
+                    <InfoCircleOutlined className="ml-2 text-blue-400 hover:text-blue-600 cursor-help" />
+                  </Tooltip>
+                </span>
+              }
+              name="alias"
+              rules={[
+                { required: false },
                 {
                   validator: (_, value) =>
                     value && value.includes("-")
-                      ? Promise.reject("Server name cannot contain '-' (hyphen). Please use '_' (underscore) instead.")
+                      ? Promise.reject("Alias cannot contain '-' (hyphen). Please use '_' (underscore) instead.")
                       : Promise.resolve(),
                 },
               ]}
@@ -197,6 +261,7 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
               <TextInput
                 placeholder="e.g., GitHub_MCP, Zapier_MCP, etc."
                 className="rounded-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                onChange={() => setAliasManuallyEdited(true)}
               />
             </Form.Item>
 
@@ -241,7 +306,7 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
                 name="url"
                 rules={[
                   { required: true, message: "Please enter a server URL" },
-                  { type: "url", message: "Please enter a valid URL" },
+                  { validator: (_, value) => validateMCPServerUrl(value) },
                 ]}
               >
                 <TextInput
@@ -283,7 +348,8 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
               rules={[{ required: true, message: "Please select a spec version" }]}
             >
               <Select placeholder="Select MCP version" className="rounded-lg" size="large">
-                <Select.Option value="2025-03-26">2025-03-26 (Latest)</Select.Option>
+                <Select.Option value="2025-06-18">2025-06-18 (Latest)</Select.Option>
+                <Select.Option value="2025-03-26">2025-03-26</Select.Option>
                 <Select.Option value="2024-11-05">2024-11-05</Select.Option>
               </Select>
             </Form.Item>
@@ -304,12 +370,13 @@ const CreateMCPServer: React.FC<CreateMCPServerProps> = ({
                 mode="tags"
                 showSearch
                 placeholder="Select existing groups or type to create new ones"
-                optionFilterProp="children"
+                optionFilterProp="value"
+                filterOption={(input, option) =>
+                  (option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                }
+                onSearch={(value) => setSearchValue(value)}
                 tokenSeparators={[","]}
-                options={mcpAccessGroups.map((group) => ({
-                  value: group,
-                  label: group,
-                }))}
+                options={getAccessGroupOptions()}
                 maxTagCount="responsive"
                 allowClear
               />
