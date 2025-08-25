@@ -58,6 +58,13 @@ litellm_settings:
     service_name: "mymaster"
     sentinel_nodes: [["localhost", 26379]]
 
+    # Optional - GCP IAM Authentication for Redis
+    gcp_service_account: "projects/-/serviceAccounts/your-sa@project.iam.gserviceaccount.com"  # GCP service account for IAM authentication
+    gcp_ssl_ca_certs: "./server-ca.pem"  # Path to SSL CA certificate file for GCP Memorystore Redis
+    ssl: true  # Enable SSL for secure connections
+    ssl_cert_reqs: null  # Set to null for self-signed certificates
+    ssl_check_hostname: false  # Set to false for self-signed certificates
+
     # Optional - Qdrant Semantic Cache Settings
     qdrant_semantic_cache_embedding_model: openai-embedding # the model should be defined on the model_list
     qdrant_collection_name: test_collection
@@ -328,12 +335,16 @@ router_settings:
 | ANTHROPIC_API_KEY | API key for Anthropic service
 | ANTHROPIC_API_BASE | Base URL for Anthropic API. Default is https://api.anthropic.com
 | AWS_ACCESS_KEY_ID | Access Key ID for AWS services
+| AWS_DEFAULT_REGION | Default AWS region for service interactions when AWS_REGION is not set
 | AWS_PROFILE_NAME | AWS CLI profile name to be used
+| AWS_REGION | AWS region for service interactions (takes precedence over AWS_DEFAULT_REGION)
 | AWS_REGION_NAME | Default AWS region for service interactions
+| AWS_ROLE_ARN | ARN of the AWS IAM role to assume for authentication
 | AWS_ROLE_NAME | Role name for AWS IAM usage
 | AWS_SECRET_ACCESS_KEY | Secret Access Key for AWS services
 | AWS_SESSION_NAME | Name for AWS session
 | AWS_WEB_IDENTITY_TOKEN | Web identity token for AWS
+| AWS_WEB_IDENTITY_TOKEN_FILE | Path to file containing web identity token for AWS
 | AZURE_API_VERSION | Version of the Azure API being used
 | AZURE_AUTHORITY_HOST | Azure authority host URL
 | AZURE_CERTIFICATE_PASSWORD | Password for Azure OpenAI certificate
@@ -342,6 +353,7 @@ router_settings:
 | AZURE_CODE_INTERPRETER_COST_PER_SESSION | Cost per session for Azure Code Interpreter service
 | AZURE_COMPUTER_USE_INPUT_COST_PER_1K_TOKENS | Input cost per 1K tokens for Azure Computer Use service
 | AZURE_COMPUTER_USE_OUTPUT_COST_PER_1K_TOKENS | Output cost per 1K tokens for Azure Computer Use service
+| AZURE_DEFAULT_RESPONSES_API_VERSION | Version of the Azure Default Responses API being used. Default is "preview"
 | AZURE_TENANT_ID | Tenant ID for Azure Active Directory
 | AZURE_USERNAME | Username for Azure services, use in conjunction with AZURE_PASSWORD for azure ad token with basic username/password workflow
 | AZURE_PASSWORD | Password for Azure services, use in conjunction with AZURE_USERNAME for azure ad token with basic username/password workflow
@@ -362,6 +374,7 @@ router_settings:
 | BEDROCK_MAX_POLICY_SIZE | Maximum size for Bedrock policy. Default is 75
 | BERRISPEND_ACCOUNT_ID | Account ID for BerriSpend service
 | BRAINTRUST_API_KEY | API key for Braintrust integration
+| BRAINTRUST_API_BASE | Base URL for Braintrust API. Default is https://api.braintrustdata.com/v1
 | CACHED_STREAMING_CHUNK_DELAY | Delay in seconds for cached streaming chunks. Default is 0.02
 | CIRCLE_OIDC_TOKEN | OpenID Connect token for CircleCI
 | CIRCLE_OIDC_TOKEN_V2 | Version 2 of the OpenID Connect token for CircleCI
@@ -649,6 +662,8 @@ router_settings:
 | REDIS_PASSWORD | Password for Redis service
 | REDIS_PORT | Port number for Redis server
 | REDIS_SOCKET_TIMEOUT | Timeout in seconds for Redis socket operations. Default is 0.1
+| REDIS_GCP_SERVICE_ACCOUNT | GCP service account for IAM authentication with Redis. Format: "projects/-/serviceAccounts/name@project.iam.gserviceaccount.com"
+| REDIS_GCP_SSL_CA_CERTS | Path to SSL CA certificate file for secure GCP Memorystore Redis connections
 | REDOC_URL | The path to the Redoc Fast API documentation. **By default this is "/redoc"**
 | REPEATED_STREAMING_CHUNK_LIMIT | Limit for repeated streaming chunks to detect looping. Default is 100
 | REPLICATE_MODEL_NAME_WITH_ID_LENGTH | Length of Replicate model names with ID. Default is 64
