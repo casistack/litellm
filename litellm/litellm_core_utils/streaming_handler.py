@@ -5,7 +5,7 @@ import json
 import threading
 import time
 import traceback
-import uuid
+from litellm._uuid import uuid
 from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 import httpx
@@ -1024,6 +1024,8 @@ class CustomStreamWrapper:
         return
 
     def chunk_creator(self, chunk: Any):  # type: ignore  # noqa: PLR0915
+        if hasattr(chunk, 'id'):
+            self.response_id = chunk.id
         model_response = self.model_response_creator()
         response_obj: Dict[str, Any] = {}
         try:
@@ -1617,11 +1619,12 @@ class CustomStreamWrapper:
                             completion_start_time=datetime.datetime.now()
                         )
                     ## LOGGING
-                    executor.submit(
-                        self.run_success_logging_and_cache_storage,
-                        response,
-                        cache_hit,
-                    )  # log response
+                    if not litellm.disable_streaming_logging:
+                        executor.submit(
+                            self.run_success_logging_and_cache_storage,
+                            response,
+                            cache_hit,
+                        )  # log response
                     choice = response.choices[0]
                     if isinstance(choice, StreamingChoices):
                         self.response_uptil_now += choice.delta.get("content", "") or ""
@@ -1937,7 +1940,7 @@ class CustomStreamWrapper:
                 )
             ## Map to OpenAI Exception
             try:
-                exception_type(
+                raise exception_type(
                     model=self.model,
                     custom_llm_provider=self.custom_llm_provider,
                     original_exception=e,

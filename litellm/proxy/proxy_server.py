@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import traceback
-import uuid
+from litellm._uuid import uuid
 import warnings
 from datetime import datetime, timedelta
 from typing import (
@@ -41,6 +41,7 @@ from litellm.types.utils import (
     TextCompletionResponse,
     TokenCountResponse,
 )
+from litellm.utils import load_credentials_from_list
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
@@ -457,9 +458,9 @@ except ImportError:
 server_root_path = os.getenv("SERVER_ROOT_PATH", "")
 _license_check = LicenseCheck()
 premium_user: bool = _license_check.is_premium()
-premium_user_data: Optional["EnterpriseLicenseData"] = (
-    _license_check.airgapped_license_data
-)
+premium_user_data: Optional[
+    "EnterpriseLicenseData"
+] = _license_check.airgapped_license_data
 global_max_parallel_request_retries_env: Optional[str] = os.getenv(
     "LITELLM_GLOBAL_MAX_PARALLEL_REQUEST_RETRIES"
 )
@@ -953,9 +954,9 @@ model_max_budget_limiter = _PROXY_VirtualKeyModelMaxBudgetLimiter(
     dual_cache=user_api_key_cache
 )
 litellm.logging_callback_manager.add_litellm_callback(model_max_budget_limiter)
-redis_usage_cache: Optional[RedisCache] = (
-    None  # redis cache used for tracking spend, tpm/rpm limits
-)
+redis_usage_cache: Optional[
+    RedisCache
+] = None  # redis cache used for tracking spend, tpm/rpm limits
 user_custom_auth = None
 user_custom_key_generate = None
 user_custom_sso = None
@@ -1286,9 +1287,9 @@ async def update_cache(  # noqa: PLR0915
         _id = "team_id:{}".format(team_id)
         try:
             # Fetch the existing cost for the given user
-            existing_spend_obj: Optional[LiteLLM_TeamTable] = (
-                await user_api_key_cache.async_get_cache(key=_id)
-            )
+            existing_spend_obj: Optional[
+                LiteLLM_TeamTable
+            ] = await user_api_key_cache.async_get_cache(key=_id)
             if existing_spend_obj is None:
                 # do nothing if team not in api key cache
                 return
@@ -1854,6 +1855,15 @@ class ProxyConfig:
                     set_global_prompt_directory(value)
                     verbose_proxy_logger.info(
                         f"{blue_color_code}Set Global Prompt Directory on LiteLLM Proxy{reset_color_code}"
+                    )
+                elif key == "global_bitbucket_config":
+                    from litellm.integrations.bitbucket import (
+                        set_global_bitbucket_config,
+                    )
+
+                    set_global_bitbucket_config(value)
+                    verbose_proxy_logger.info(
+                        f"{blue_color_code}Set Global BitBucket Config on LiteLLM Proxy{reset_color_code}"
                     )
                 elif key == "callbacks":
                     initialize_callbacks_on_proxy(
@@ -3101,10 +3111,10 @@ class ProxyConfig:
         )
 
         try:
-            guardrails_in_db: List[Guardrail] = (
-                await GuardrailRegistry.get_all_guardrails_from_db(
-                    prisma_client=prisma_client
-                )
+            guardrails_in_db: List[
+                Guardrail
+            ] = await GuardrailRegistry.get_all_guardrails_from_db(
+                prisma_client=prisma_client
             )
             verbose_proxy_logger.debug(
                 "guardrails from the DB %s", str(guardrails_in_db)
@@ -3334,9 +3344,9 @@ async def initialize(  # noqa: PLR0915
         user_api_base = api_base
         dynamic_config[user_model]["api_base"] = api_base
     if api_version:
-        os.environ["AZURE_API_VERSION"] = (
-            api_version  # set this for azure - litellm can read this from the env
-        )
+        os.environ[
+            "AZURE_API_VERSION"
+        ] = api_version  # set this for azure - litellm can read this from the env
     if max_tokens:  # model-specific param
         dynamic_config[user_model]["max_tokens"] = max_tokens
     if temperature:  # model-specific param
@@ -3548,7 +3558,7 @@ def giveup(e):
         return True  # giveup if queuing max parallel request limits is disabled
 
     if result:
-        verbose_proxy_logger.info(json.dumps({"event": "giveup", "exception": str(e)}))
+        verbose_proxy_logger.debug(json.dumps({"event": "giveup", "exception": str(e)}))
     return result
 
 
@@ -3812,9 +3822,7 @@ class ProxyStartupEvent:
         # CloudZero Background Job
         ########################################################
         from litellm.integrations.cloudzero.cloudzero import CloudZeroLogger
-        from litellm.proxy.spend_tracking.cloudzero_endpoints import (
-            is_cloudzero_setup,
-        )
+        from litellm.proxy.spend_tracking.cloudzero_endpoints import is_cloudzero_setup
 
         if await is_cloudzero_setup():
             await CloudZeroLogger.init_cloudzero_background_job(scheduler=scheduler)
@@ -5896,6 +5904,7 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
             pass
     if deployment is not None:
         litellm_model_name = deployment.get("litellm_params", {}).get("model")
+        load_credentials_from_list(deployment.get("litellm_params", {}))
         # remove the custom_llm_provider_prefix in the litellm_model_name
         if "/" in litellm_model_name:
             litellm_model_name = litellm_model_name.split("/", 1)[1]
@@ -6109,12 +6118,10 @@ def _add_team_models_to_all_models(
     team_models: Dict[str, Set[str]] = {}
 
     for team_object in team_db_objects_typed:
-
         if (
             len(team_object.models) == 0  # empty list = all model access
             or SpecialModelNames.all_proxy_models.value in team_object.models
         ):
-
             model_list = llm_router.get_model_list()
             if model_list is not None:
                 for model in model_list:
@@ -6265,7 +6272,6 @@ async def get_all_team_and_direct_access_models(
     for _model in all_models:
         model_id = _model.get("model_info", {}).get("id", None)
         if model_id is not None and model_id in direct_access_models:
-
             _model["model_info"]["direct_access"] = True
 
     ## FILTER OUT MODELS THAT ARE NOT IN DIRECT_ACCESS_MODELS OR ACCESS_VIA_TEAM_IDS - only show user models they can call
@@ -7601,7 +7607,10 @@ async def login(request: Request):  # noqa: PLR0915
             data=UpdateUserRequest(
                 user_id=key_user_id,
                 user_role=user_role,
-            )
+            ),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+            ),
         )
         if os.getenv("DATABASE_URL") is not None:
             response = await generate_key_helper_fn(
@@ -8622,9 +8631,9 @@ async def get_config_list(
                             hasattr(sub_field_info, "description")
                             and sub_field_info.description is not None
                         ):
-                            nested_fields[idx].field_description = (
-                                sub_field_info.description
-                            )
+                            nested_fields[
+                                idx
+                            ].field_description = sub_field_info.description
                         idx += 1
 
                     _stored_in_db = None

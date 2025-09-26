@@ -13,7 +13,7 @@ model/{model_id}/update - PATCH endpoint for model update.
 import asyncio
 import datetime
 import json
-import uuid
+from litellm._uuid import uuid
 from typing import Dict, List, Literal, Optional, Tuple, Union, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -1023,7 +1023,7 @@ async def update_public_model_groups(
         # Save the updated config
         await proxy_config.save_config(new_config=config)
 
-        verbose_proxy_logger.info(
+        verbose_proxy_logger.debug(
             f"Updated public model groups to: {request.model_groups} by user: {user_api_key_dict.user_id}"
         )
 
@@ -1090,7 +1090,7 @@ async def update_useful_links(
         # Save the updated config
         await proxy_config.save_config(new_config=config)
 
-        verbose_proxy_logger.info(
+        verbose_proxy_logger.debug(
             f"Updated useful links to: {request.useful_links} by user: {user_api_key_dict.user_id}"
         )
 

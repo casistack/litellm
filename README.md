@@ -25,7 +25,7 @@
     <a href="https://discord.gg/wuPM9dRgDw">
         <img src="https://img.shields.io/static/v1?label=Chat%20on&message=Discord&color=blue&logo=Discord&style=flat-square" alt="Discord">
     </a>
-    <a href="https://join.slack.com/share/enQtOTE0ODczMzk2Nzk4NC01YjUxNjY2YjBlYTFmNDRiZTM3NDFiYTM3MzVkODFiMDVjOGRjMmNmZTZkZTMzOWQzZGQyZWIwYjQ0MWExYmE3">
+    <a href="https://www.litellm.ai/support">
         <img src="https://img.shields.io/static/v1?label=Chat%20on&message=Slack&color=black&logo=Slack&style=flat-square" alt="Slack">
     </a>
 </h4>
@@ -37,7 +37,7 @@ LiteLLM manages:
 - Retry/fallback logic across multiple deployments (e.g. Azure/OpenAI) - [Router](https://docs.litellm.ai/docs/routing)
 - Set Budgets & Rate limits per project, api key, model [LiteLLM Proxy Server (LLM Gateway)](https://docs.litellm.ai/docs/simple_proxy)
 
-[**Jump to LiteLLM Proxy (LLM Gateway) Docs**](https://github.com/BerriAI/litellm?tab=readme-ov-file#openai-proxy---docs) <br>
+[**Jump to LiteLLM Proxy (LLM Gateway) Docs**](https://github.com/BerriAI/litellm?tab=readme-ov-file#litellm-proxy-server-llm-gateway---docs) <br>
 [**Jump to Supported LLM Providers**](https://github.com/BerriAI/litellm?tab=readme-ov-file#supported-providers-docs)
 
 🚨 **Stable Release:** Use docker images with the `-stable` tag. These have undergone 12 hour load tests, before being published. [More information about the release cycle here](https://docs.litellm.ai/docs/proxy/release_cycle)
@@ -316,6 +316,7 @@ curl 'http://0.0.0.0:4000/key/generate' \
 | [google AI Studio - gemini](https://docs.litellm.ai/docs/providers/gemini)          | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 |                                                                               |                                                                         |
 | [mistral ai api](https://docs.litellm.ai/docs/providers/mistral)                    | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 | ✅                                                                             |                                                                         |
 | [cloudflare AI Workers](https://docs.litellm.ai/docs/providers/cloudflare_workers)  | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 |                                                                               |                                                                         |
+| [CompactifAI](https://docs.litellm.ai/docs/providers/compactifai)                   | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 |                                                                               |                                                                         |
 | [cohere](https://docs.litellm.ai/docs/providers/cohere)                             | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 | ✅                                                                             |                                                                         |
 | [anthropic](https://docs.litellm.ai/docs/providers/anthropic)                       | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 |                                                                               |                                                                         |
 | [empower](https://docs.litellm.ai/docs/providers/empower)                    | ✅                                                      | ✅                                                                              | ✅                                                                                  | ✅                                                                                |
@@ -345,16 +346,25 @@ curl 'http://0.0.0.0:4000/key/generate' \
 | [Featherless AI](https://docs.litellm.ai/docs/providers/featherless_ai)                              | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 |                                                                               |                                                                         |
 | [Nebius AI Studio](https://docs.litellm.ai/docs/providers/nebius)                             | ✅                                                       | ✅                                                                               | ✅                                                                                   | ✅                                                                                 | ✅                                                                             |                                                                         |
 | [Heroku](https://docs.litellm.ai/docs/providers/heroku)                             | ✅                                                       | ✅                                                                               |                                                                                    |                                                                                  |                                                                              |                                                                         |
+| [OVHCloud AI Endpoints](https://docs.litellm.ai/docs/providers/ovhcloud)                             | ✅                                                       | ✅                                                                               |                                                                                    |                                                                                  |                                                                              |                                                                         |
 
 [**Read the Docs**](https://docs.litellm.ai/docs/)
 
-## Contributing
+## Run in Developer mode
+### Services
+1. Setup .env file in root
+2. Run dependant services `docker-compose up db prometheus`
 
-Interested in contributing? Contributions to LiteLLM Python SDK, Proxy Server, and LLM integrations are both accepted and highly encouraged!
+### Backend
+1. (In root) create virtual environment `python -m venv .venv`
+2. Activate virtual environment `source .venv/bin/activate`
+3. Install dependencies `pip install -e ".[all]"`
+4. Start proxy backend `python litellm/proxy_cli.py`
 
-**Quick start:** `git clone` → `make install-dev` → `make format` → `make lint` → `make test-unit`
-
-See our comprehensive [Contributing Guide (CONTRIBUTING.md)](CONTRIBUTING.md) for detailed instructions.
+### Frontend
+1. Navigate to `ui/litellm-dashboard`
+2. Install dependencies `npm install`
+3. Run `npm run dev` to start the dashboard
 
 # Enterprise
 For companies that need better security, user management and professional support
@@ -408,7 +418,7 @@ All these checks must pass before your PR can be merged.
 
 - [Schedule Demo 👋](https://calendly.com/d/4mp-gd3-k5k/berriai-1-1-onboarding-litellm-hosted-version)
 - [Community Discord 💭](https://discord.gg/wuPM9dRgDw)
-- [Community Slack 💭](https://join.slack.com/share/enQtOTE0ODczMzk2Nzk4NC01YjUxNjY2YjBlYTFmNDRiZTM3NDFiYTM3MzVkODFiMDVjOGRjMmNmZTZkZTMzOWQzZGQyZWIwYjQ0MWExYmE3)
+- [Community Slack 💭](https://www.litellm.ai/support)
 - Our numbers 📞 +1 (770) 8783-106 / ‭+1 (412) 618-6238‬
 - Our emails ✉️ ishaan@berri.ai / krrish@berri.ai
 
@@ -432,18 +442,3 @@ All these checks must pass before your PR can be merged.
 </a>
 
 
-## Run in Developer mode
-### Services
-1. Setup .env file in root
-2. Run dependant services `docker-compose up db prometheus`
-
-### Backend
-1. (In root) create virtual environment `python -m venv .venv`
-2. Activate virtual environment `source .venv/bin/activate`
-3. Install dependencies `pip install -e ".[all]"`
-4. Start proxy backend `python3 /path/to/litellm/proxy_cli.py`
-
-### Frontend
-1. Navigate to `ui/litellm-dashboard`
-2. Install dependencies `npm install`
-3. Run `npm run dev` to start the dashboard
