@@ -68,10 +68,15 @@ const PROVIDER_CREDENTIAL_FIELDS: Record<Providers, ProviderCredentialField[]> =
     {
       key: "api_base",
       label: "API Base",
-      type: "text",
-      placeholder: "https://api.openai.com/v1",
-      tooltip: "Common endpoints: https://api.openai.com/v1, https://eu.api.openai.com, https://us.api.openai.com",
+      type: "select",
+      placeholder: "Select an endpoint",
+      tooltip: "Select from common OpenAI endpoints",
       defaultValue: "https://api.openai.com/v1",
+      options: [
+        "https://api.openai.com/v1",
+        "https://us.api.openai.com/v1",
+        "https://eu.api.openai.com/v1",
+      ],
     },
     {
       key: "organization",
@@ -89,10 +94,15 @@ const PROVIDER_CREDENTIAL_FIELDS: Record<Providers, ProviderCredentialField[]> =
     {
       key: "api_base",
       label: "API Base",
-      type: "text",
-      placeholder: "https://api.openai.com/v1",
-      tooltip: "Common endpoints: https://api.openai.com/v1, https://eu.api.openai.com, https://us.api.openai.com",
+      type: "select",
+      placeholder: "Select an endpoint",
+      tooltip: "Select from common OpenAI endpoints",
       defaultValue: "https://api.openai.com/v1",
+      options: [
+        "https://api.openai.com/v1",
+        "https://us.api.openai.com/v1",
+        "https://eu.api.openai.com/v1",
+      ],
     },
     {
       key: "organization",
@@ -164,7 +174,15 @@ const PROVIDER_CREDENTIAL_FIELDS: Record<Providers, ProviderCredentialField[]> =
       key: "api_key",
       label: "Azure API Key",
       type: "password",
-      required: true,
+      placeholder: "Enter your Azure API Key",
+      required: false,
+    },
+    {
+      key: "azure_ad_token",
+      label: "Azure AD Token",
+      type: "password",
+      placeholder: "Enter your Azure AD Token",
+      required: false,
     },
   ],
   [Providers.Azure_AI_Studio]: [
@@ -507,9 +525,9 @@ const PROVIDER_CREDENTIAL_FIELDS: Record<Providers, ProviderCredentialField[]> =
     },
     {
       key: "api_key",
-      label: "OpenAI API Key",
+      label: "vLLM API Key",
       type: "password",
-      required: true,
+      required: false,
     },
   ],
   [Providers.Voyage]: [
@@ -581,7 +599,7 @@ const PROVIDER_CREDENTIAL_FIELDS: Record<Providers, ProviderCredentialField[]> =
       label: "API Key",
       type: "password",
       required: true,
-    }
+    },
   ],
 };
 

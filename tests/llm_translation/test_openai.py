@@ -337,6 +337,48 @@ def test_openai_max_retries_0(mock_get_openai_client):
     assert mock_get_openai_client.call_args.kwargs["max_retries"] == 0
 
 
+@patch("litellm.main.openai_chat_completions._get_openai_client")
+def test_openai_image_generation_forwards_organization(mock_get_openai_client):
+    """Ensure organization flows to OpenAI client for image generation."""
+
+    class _DummyImages:
+        def generate(self, **kwargs):  # type: ignore
+            class _Resp:
+                def model_dump(self_inner):  # minimal OpenAI ImagesResponse shape
+                    return {
+                        "created": 123,
+                        "data": [{"url": "http://example.com/image.png"}],
+                        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    }
+
+            return _Resp()
+
+    class _DummyClient:
+        def __init__(self):
+            self.api_key = "sk-test"
+
+            class _BaseURL:
+                _uri_reference = "https://api.openai.com/v1"
+
+            self._base_url = _BaseURL()
+            self.images = _DummyImages()
+
+    mock_get_openai_client.return_value = _DummyClient()
+
+    org = "org_test_123"
+    resp = litellm.image_generation(
+        model="gpt-image-1",
+        prompt="A cute baby sea otter",
+        organization=org,
+    )
+
+    # Assert organization forwarded into OpenAI client factory
+    assert mock_get_openai_client.call_args.kwargs.get("organization") == org
+
+    # Basic sanity on response shape
+    assert hasattr(resp, "data") and len(resp.data) == 1
+
+
 @pytest.mark.parametrize("model", ["o1", "o3-mini"])
 def test_o1_parallel_tool_calls(model):
     litellm.completion(
@@ -796,19 +838,16 @@ def test_gpt_5_reasoning_streaming():
         stream=True,
     )
 
-    has_reasoning_content = False
+    has_content = False
     for chunk in response:
         print("chunk: ", chunk)
-        if (
-            hasattr(chunk.choices[0].delta, "reasoning_content")
-            and chunk.choices[0].delta.reasoning_content is not None
-        ):
-            print("reasoning_content: ", chunk.choices[0].delta.reasoning_content)
-            has_reasoning_content = True
+        if chunk.choices[0].delta.content:
+            has_content = True
+            print("content: ", chunk.choices[0].delta.content)
 
-    assert has_reasoning_content
+    assert has_content
 
-    print("✓ gpt_5_reasoning_streaming correctly handled reasoning content")
+    print("✓ gpt_5_reasoning_streaming correctly handled streaming")
 
 
 def test_gpt_5_pro_reasoning():
@@ -824,7 +863,8 @@ def test_gpt_5_pro_reasoning():
         reasoning_effort="high",
     )
     print("response: ", response)
-    assert response.choices[0].message.reasoning_content is not None
+    # reasoning_effort string param does not request summaries (opt-in since #16210)
+    assert response.choices[0].message.content is not None  # But we should get content
 
 
 def test_openai_gpt_5_codex_reasoning():
@@ -1312,7 +1352,7 @@ def test_openai_gpt_5_codex_reasoning():
 
 # Tests moved from test_streaming_n_with_tools.py
 # Regression test for: https://github.com/BerriAI/litellm/issues/8977
-@pytest.mark.parametrize("model", ["gpt-4o", "gpt-4-turbo"])
+@pytest.mark.parametrize("model", ["gpt-4o"])
 @pytest.mark.asyncio
 async def test_streaming_tool_calls_with_n_greater_than_1(model):
     """

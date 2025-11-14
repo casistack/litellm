@@ -15,13 +15,15 @@ from litellm.types.proxy.guardrails.guardrail_hooks.ibm import (
     IBMGuardrailsBaseConfigModel,
 )
 
+
+
 """
 Pydantic object defining how to set guardrails on litellm proxy
 
 guardrails:
   - guardrail_name: "bedrock-pre-guard"
     litellm_params:
-      guardrail: bedrock  # supported values: "aporia", "bedrock", "lakera"
+      guardrail: bedrock  # supported values: "aporia", "bedrock", "lakera", "zscaler_ai_guard"
       mode: "during_call"
       guardrailIdentifier: ff6ujrregl1q
       guardrailVersion: "DRAFT"
@@ -49,9 +51,11 @@ class SupportedGuardrailIntegrations(Enum):
     OPENAI_MODERATION = "openai_moderation"
     NOMA = "noma"
     TOOL_PERMISSION = "tool_permission"
+    ZSCALER_AI_GUARD = "zscaler_ai_guard"    
     JAVELIN = "javelin"
     ENKRYPTAI = "enkryptai"
     IBM_GUARDRAILS = "ibm_guardrails"
+    LITELLM_CONTENT_FILTER = "litellm_content_filter"
 
 
 class Role(Enum):
@@ -423,6 +427,23 @@ class ToolPermissionGuardrailConfigModel(BaseModel):
     )
 
 
+class ZscalerAIGuardConfigModel(BaseModel):
+    """Configuration parameters for the Zscaler AI Guard guardrail"""
+
+    policy_id: Optional[int] = Field(
+        default=None,
+        description="Policy ID for Zscaler AI Guard. Can also be set via ZSCALER_AI_GUARD_POLICY_ID environment variable"
+    )
+    send_user_api_key_alias: Optional[bool] = Field(
+        default=False, description="Whether to send user_API_key_alias in headers"
+    )
+    send_user_api_key_user_id: Optional[bool] = Field(
+        default=False, description="Whether to send user_API_key_user_id in headers"
+    )
+    send_user_api_key_team_id: Optional[bool] = Field(
+        default=False, description="Whether to send user_API_key_team_id in headers"
+    )
+
 class JavelinGuardrailConfigModel(BaseModel):
     """Configuration parameters for the Javelin guardrail"""
 
@@ -440,6 +461,65 @@ class JavelinGuardrailConfigModel(BaseModel):
     )
     config: Optional[Dict] = Field(
         default=None, description="Additional configuration for the guardrail"
+    )
+
+
+class ContentFilterAction(str, Enum):
+    """Action to take when content filter detects a match"""
+
+    BLOCK = "BLOCK"
+    MASK = "MASK"
+
+
+class BlockedWord(BaseModel):
+    """Represents a blocked word with its action and optional description"""
+
+    keyword: str = Field(description="The keyword to block or mask")
+    action: ContentFilterAction = Field(
+        description="Action to take when keyword is detected (BLOCK or MASK)"
+    )
+    description: Optional[str] = Field(
+        default=None, description="Optional description explaining why this keyword is sensitive"
+    )
+
+
+class ContentFilterPattern(BaseModel):
+    """Represents a content filter pattern (prebuilt or custom regex)"""
+
+    pattern_type: Literal["prebuilt", "regex"] = Field(
+        description="Type of pattern: 'prebuilt' for predefined patterns or 'regex' for custom"
+    )
+    pattern_name: Optional[str] = Field(
+        default=None,
+        description="Name of prebuilt pattern (e.g., 'us_ssn', 'credit_card'). Required if pattern_type is 'prebuilt'"
+    )
+    pattern: Optional[str] = Field(
+        default=None,
+        description="Custom regex pattern. Required if pattern_type is 'regex'"
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description="Name for this pattern (used in logging and error messages)"
+    )
+    action: ContentFilterAction = Field(
+        description="Action to take when pattern matches (BLOCK or MASK)"
+    )
+
+
+class ContentFilterConfigModel(BaseModel):
+    """Configuration parameters for the content filter guardrail"""
+
+    patterns: Optional[List[ContentFilterPattern]] = Field(
+        default=None,
+        description="List of patterns (prebuilt or custom regex) to detect"
+    )
+    blocked_words: Optional[List[BlockedWord]] = Field(
+        default=None,
+        description="List of blocked words with individual actions"
+    )
+    blocked_words_file: Optional[str] = Field(
+        default=None,
+        description="Path to YAML file containing blocked_words list"
     )
 
 
@@ -533,7 +613,9 @@ class LitellmParams(
     GraySwanGuardrailConfigModel,
     NomaGuardrailConfigModel,
     ToolPermissionGuardrailConfigModel,
+    ZscalerAIGuardConfigModel, 
     JavelinGuardrailConfigModel,
+    ContentFilterConfigModel,
     BaseLitellmParams,
     EnkryptAIGuardrailConfigs,
     IBMGuardrailsBaseConfigModel,
@@ -615,6 +697,7 @@ class GuardrailUIAddGuardrailSettings(BaseModel):
     supported_actions: List[str]
     supported_modes: List[str]
     pii_entity_categories: List[PiiEntityCategoryMap]
+    content_filter_settings: Optional[Dict[str, Any]] = None
 
 
 class PresidioPerRequestConfig(BaseModel):
