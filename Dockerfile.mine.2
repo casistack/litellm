@@ -1,15 +1,15 @@
 # =============================================
 # Build Arguments
 # =============================================
-# Base image for building
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/python:latest-dev
+# Base image for building (aligned with upstream - uses wolfi-base)
+ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base
 # Runtime image
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/python:latest-dev
+ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base
 
 # =============================================
 # Builder Stage
 # =============================================
-FROM $LITELLM_BUILD_IMAGE as builder
+FROM $LITELLM_BUILD_IMAGE AS builder
 
 # Set the working directory
 WORKDIR /app
@@ -17,13 +17,11 @@ WORKDIR /app
 # Switch to root user for permission to use apk
 USER root
 
-# Install system build dependencies
-RUN apk update && \
-    apk add --no-cache gcc python3-dev openssl openssl-dev
+# Install system build dependencies (aligned with upstream)
+RUN apk add --no-cache bash gcc py3-pip python3 python3-dev openssl openssl-dev
 
 # Install Python build tools
-RUN pip install --upgrade pip && \
-    pip install build
+RUN python -m pip install build
 
 # Copy application files
 COPY . .
@@ -55,14 +53,13 @@ RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 # =============================================
 # Runtime Stage
 # =============================================
-FROM $LITELLM_RUNTIME_IMAGE as runtime
+FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 # Switch to root user for permission to use apk
 USER root
 
-# Security updates
-RUN apk update && \
-    apk add --no-cache openssl nano jq curl
+# Security updates (aligned with upstream - uses wolfi-base packages)
+RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip nano jq curl
 
 # Setup application directory
 WORKDIR /app
