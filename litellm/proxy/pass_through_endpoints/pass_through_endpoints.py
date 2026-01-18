@@ -226,12 +226,6 @@ async def chat_completion_pass_through_endpoint(  # noqa: PLR0915
             and data["model"] in llm_router.model_group_alias
         ):  # model set in model_group_alias
             llm_response = asyncio.create_task(llm_router.aadapter_completion(**data))
-        elif (
-            llm_router is not None and data["model"] in llm_router.deployment_names
-        ):  # model in router deployments, calling a specific deployment on the router
-            llm_response = asyncio.create_task(
-                llm_router.aadapter_completion(**data, specific_deployment=True)
-            )
         elif llm_router is not None and llm_router.has_model_id(
             data["model"]
         ):  # model in router model list
@@ -239,9 +233,15 @@ async def chat_completion_pass_through_endpoint(  # noqa: PLR0915
         elif (
             llm_router is not None
             and data["model"] not in router_model_names
-            and llm_router.default_deployment is not None
-        ):  # model in router deployments, calling a specific deployment on the router
+            and (llm_router.default_deployment is not None or len(llm_router.pattern_router.patterns) > 0)
+        ):  # check for wildcard routes or default deployment before checking deployment_names
             llm_response = asyncio.create_task(llm_router.aadapter_completion(**data))
+        elif (
+            llm_router is not None and data["model"] in llm_router.deployment_names
+        ):  # model in router deployments, calling a specific deployment on the router (lowest priority)
+            llm_response = asyncio.create_task(
+                llm_router.aadapter_completion(**data, specific_deployment=True)
+            )
         elif user_model is not None:  # `litellm --model <your-model-name>`
             llm_response = asyncio.create_task(litellm.aadapter_completion(**data))
         else:
@@ -971,18 +971,23 @@ def _update_metadata_with_tags_in_header(request: Request, metadata: dict) -> di
     Used for google and vertex JS SDKs, and Azure passthrough
     Checks both 'tags' and 'x-litellm-tags' headers
     """
-    # Initialize tags list if it doesn't exist
-    if "tags" not in metadata:
-        metadata["tags"] = []
-    
+    tags_to_add = []
+
     # Check for 'tags' header first
     _tags = request.headers.get("tags")
     if _tags:
-            metadata["tags"].extend([tag.strip() for tag in _tags.split(",")])
+        tags_to_add.extend([tag.strip() for tag in _tags.split(",")])
 
     _tags = request.headers.get("x-litellm-tags")
     if _tags:
-            metadata["tags"].extend([tag.strip() for tag in _tags.split(",")])
+        tags_to_add.extend([tag.strip() for tag in _tags.split(",")])
+
+    # Only add tags key if there are tags to add
+    if tags_to_add:
+        if "tags" not in metadata:
+            metadata["tags"] = []
+        metadata["tags"].extend(tags_to_add)
+
     return metadata
 
 

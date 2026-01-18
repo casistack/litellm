@@ -674,33 +674,39 @@ class BedrockLLM(BaseAWSLLM):
             )
 
         ## CALCULATING USAGE - bedrock returns usage in the headers
-        bedrock_input_tokens = response.headers.get(
-            "x-amzn-bedrock-input-token-count", None
-        )
-        bedrock_output_tokens = response.headers.get(
-            "x-amzn-bedrock-output-token-count", None
-        )
-
-        prompt_tokens = int(
-            bedrock_input_tokens or litellm.token_counter(messages=messages)
-        )
-
-        completion_tokens = int(
-            bedrock_output_tokens
-            or litellm.token_counter(
-                text=model_response.choices[0].message.content,  # type: ignore
-                count_response_tokens=True,
+        # Skip if usage was already set (e.g., from JSON response for OpenAI provider)
+        if not hasattr(model_response, "usage") or getattr(model_response, "usage", None) is None:
+            bedrock_input_tokens = response.headers.get(
+                "x-amzn-bedrock-input-token-count", None
             )
-        )
+            bedrock_output_tokens = response.headers.get(
+                "x-amzn-bedrock-output-token-count", None
+            )
 
-        model_response.created = int(time.time())
-        model_response.model = model
-        usage = Usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-        )
-        setattr(model_response, "usage", usage)
+            prompt_tokens = int(
+                bedrock_input_tokens or litellm.token_counter(messages=messages)
+            )
+
+            completion_tokens = int(
+                bedrock_output_tokens
+                or litellm.token_counter(
+                    text=model_response.choices[0].message.content,  # type: ignore
+                    count_response_tokens=True,
+                )
+            )
+
+            model_response.created = int(time.time())
+            model_response.model = model
+            usage = Usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+            setattr(model_response, "usage", usage)
+        else:
+            # Ensure created and model are set even if usage was already set
+            model_response.created = int(time.time())
+            model_response.model = model
 
         return model_response
 
@@ -723,8 +729,6 @@ class BedrockLLM(BaseAWSLLM):
         client: Optional[Union[AsyncHTTPHandler, HTTPHandler]] = None,
     ) -> Union[ModelResponse, CustomStreamWrapper]:
         try:
-            from botocore.auth import SigV4Auth
-            from botocore.awsrequest import AWSRequest
             from botocore.credentials import Credentials
         except ImportError:
             raise ImportError("Missing boto3 to call bedrock. Run 'pip install boto3'.")
@@ -801,8 +805,6 @@ class BedrockLLM(BaseAWSLLM):
         else:
             endpoint_url = f"{endpoint_url}/model/{modelId}/invoke"
             proxy_endpoint_url = f"{proxy_endpoint_url}/model/{modelId}/invoke"
-
-        sigv4 = SigV4Auth(credentials, "bedrock", aws_region_name)
 
         prompt, chat_history = self.convert_messages_to_prompt(
             model, messages, provider, custom_prompt_dict
@@ -964,15 +966,14 @@ class BedrockLLM(BaseAWSLLM):
         headers = {"Content-Type": "application/json"}
         if extra_headers is not None:
             headers = {"Content-Type": "application/json", **extra_headers}
-        request = AWSRequest(
-            method="POST", url=endpoint_url, data=data, headers=headers
+        prepped = self.get_request_headers(
+            credentials=credentials,
+            aws_region_name=aws_region_name,
+            extra_headers=extra_headers,
+            endpoint_url=endpoint_url,
+            data=data,
+            headers=headers,
         )
-        sigv4.add_auth(request)
-        if (
-            extra_headers is not None and "Authorization" in extra_headers
-        ):  # prevent sigv4 from overwriting the auth header
-            request.headers["Authorization"] = extra_headers["Authorization"]
-        prepped = request.prepare()
 
         ## LOGGING
         logging_obj.pre_call(
@@ -1527,6 +1528,7 @@ class AWSEventStreamDecoder:
                     )
                 ],
                 id=self.response_id,
+                model=self.model,
                 usage=usage,
                 provider_specific_fields=model_response_provider_specific_fields,
             )
