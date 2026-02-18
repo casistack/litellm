@@ -1133,6 +1133,24 @@ def test_update_internal_user_params_ignores_other_nones():
     assert non_default_values["max_budget"] == 100.0
 
 
+def test_update_internal_user_params_keeps_original_max_budget_when_not_provided():
+    """
+    Test that _update_internal_user_params does not include max_budget 
+    when it's not provided in the request (should keep original value).
+    """
+    # Create test data without max_budget
+    data_json = {"user_id": "test_user", "user_alias": "test_alias"}
+    data = UpdateUserRequest(user_id="test_user", user_alias="test_alias")
+
+    # Call the function
+    non_default_values = _update_internal_user_params(data_json=data_json, data=data)
+
+    # Assertions: max_budget should NOT be in non_default_values
+    assert "max_budget" not in non_default_values
+    assert "user_id" in non_default_values
+    assert "user_alias" in non_default_values
+
+
 def test_generate_request_base_validator():
     """
     Test that GenerateRequestBase validator converts empty string to None for max_budget
@@ -1150,3 +1168,135 @@ def test_generate_request_base_validator():
     # Test with None
     req = GenerateRequestBase(max_budget=None)
     assert req.max_budget is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_daily_activity_non_admin_cannot_view_other_users(monkeypatch):
+    """
+    Test that non-admin users cannot view another user's daily activity data.
+    The endpoint should raise 403 when user_id does not match the caller's own user_id.
+    Also verifies that omitting user_id defaults to the caller's own user_id.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        get_user_daily_activity,
+    )
+
+    # Mock the prisma client so the DB-not-connected check passes
+    mock_prisma_client = MagicMock()
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client", mock_prisma_client
+    )
+
+    # Non-admin caller
+    non_admin_key_dict = UserAPIKeyAuth(
+        user_id="regular-user-123",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+
+    # Case 1: Non-admin tries to view a different user's data — should get 403
+    with pytest.raises(HTTPException) as exc_info:
+        await get_user_daily_activity(
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            model=None,
+            api_key=None,
+            user_id="other-user-456",
+            page=1,
+            page_size=50,
+            timezone=None,
+            user_api_key_dict=non_admin_key_dict,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "Non-admin users can only view their own spend data" in str(
+        exc_info.value.detail
+    )
+
+    # Case 2: Non-admin omits user_id — should default to their own user_id
+    mock_response = MagicMock()
+    with patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.get_daily_activity",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_get_daily:
+        result = await get_user_daily_activity(
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            model=None,
+            api_key=None,
+            user_id=None,
+            page=1,
+            page_size=50,
+            timezone=None,
+            user_api_key_dict=non_admin_key_dict,
+        )
+
+        # Verify it called get_daily_activity with the caller's own user_id
+        mock_get_daily.assert_called_once()
+        call_kwargs = mock_get_daily.call_args
+        assert call_kwargs.kwargs["entity_id"] == "regular-user-123"
+
+
+@pytest.mark.asyncio
+async def test_get_user_daily_activity_aggregated_admin_global_view(monkeypatch):
+    """
+    Test that admin users can call the aggregated endpoint without a user_id
+    to get a global view. Also verifies that the correct arguments are forwarded
+    to the underlying get_daily_activity_aggregated helper.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        get_user_daily_activity_aggregated,
+    )
+
+    # Mock the prisma client
+    mock_prisma_client = MagicMock()
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client", mock_prisma_client
+    )
+
+    # Mock the downstream helper so we don't need a real DB
+    mock_response = MagicMock()
+    mock_get_daily_agg = AsyncMock(return_value=mock_response)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.get_daily_activity_aggregated",
+        mock_get_daily_agg,
+    )
+
+    # Admin caller
+    admin_key_dict = UserAPIKeyAuth(
+        user_id="admin-user-001",
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+    )
+
+    # Admin calls without user_id → global view (entity_id=None)
+    result = await get_user_daily_activity_aggregated(
+        start_date="2025-02-01",
+        end_date="2025-02-28",
+        model="gpt-4",
+        api_key=None,
+        user_id=None,
+        timezone=480,
+        user_api_key_dict=admin_key_dict,
+    )
+
+    assert result is mock_response
+
+    # Verify the helper was called with the right parameters
+    mock_get_daily_agg.assert_called_once_with(
+        prisma_client=mock_prisma_client,
+        table_name="litellm_dailyuserspend",
+        entity_id_field="user_id",
+        entity_id=None,  # global view: no user_id filter
+        entity_metadata_field=None,
+        start_date="2025-02-01",
+        end_date="2025-02-28",
+        model="gpt-4",
+        api_key=None,
+        timezone_offset_minutes=480,
+    )
