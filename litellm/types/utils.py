@@ -1,7 +1,17 @@
 import json
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Union,
+    get_args,
+)
 
 from openai._models import BaseModel as OpenAIObject
 from openai.types.audio.transcription_create_params import (
@@ -22,7 +32,14 @@ from openai.types.moderation_create_response import Moderation as Moderation
 from openai.types.moderation_create_response import (
     ModerationCreateResponse as ModerationCreateResponse,
 )
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Required, TypedDict
 
 from litellm._uuid import uuid
@@ -226,6 +243,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     ]
     tpm: Optional[int]
     rpm: Optional[int]
+    provider_specific_entry: Optional[Dict[str, float]]
 
 
 class ModelInfo(ModelInfoBase, total=False):
@@ -789,6 +807,9 @@ API_ROUTE_TO_CALL_TYPES = {
         CallTypes.allm_passthrough_route,
     ],
     "/v1/messages": [CallTypes.anthropic_messages],
+    # OCR
+    "/ocr": [CallTypes.aocr, CallTypes.ocr],
+    "/v1/ocr": [CallTypes.aocr, CallTypes.ocr],
 }
 
 
@@ -844,6 +865,21 @@ class ChatCompletionTokenLogprob(OpenAIObject):
     In rare cases, there may be fewer than the number of requested `top_logprobs`
     returned.
     """
+
+    # Some OpenAI-compatible providers return null for top_logprobs when
+    # omitted; normalize to [] to preserve the typed List[TopLogprob] contract.
+    @field_validator("top_logprobs", mode="before")
+    @classmethod
+    def ensure_top_logprobs_is_list(cls, v):
+        """Normalize null top_logprobs to empty list.
+
+        Some providers return null instead of [] when logprobs=true but
+        top_logprobs is unset. The OpenAI spec requires an array.
+        Fixes https://github.com/BerriAI/litellm/issues/21932
+        """
+        if v is None:
+            return []
+        return v
 
     def __contains__(self, key):
         # Define custom behavior for the 'in' operator
@@ -1825,7 +1861,7 @@ class ModelResponse(ModelResponseBase):
             else:
                 usage = usage
         elif stream is None or stream is False:
-            usage = Usage()
+            usage = None  # avoid constructing throwaway Usage; set by convert_to_model_response_object
         if hidden_params:
             self._hidden_params = hidden_params
 
@@ -2408,6 +2444,7 @@ class StandardLoggingUserAPIKeyMetadata(TypedDict):
     user_api_key_budget_reset_at: Optional[str]
     user_api_key_org_id: Optional[str]
     user_api_key_team_id: Optional[str]
+    user_api_key_project_id: Optional[str]
     user_api_key_user_id: Optional[str]
     user_api_key_user_email: Optional[str]
     user_api_key_team_alias: Optional[str]
@@ -2532,6 +2569,8 @@ class StandardLoggingMetadata(StandardLoggingUserAPIKeyMetadata):
     cold_storage_object_key: Optional[
         str
     ]  # S3/GCS object key for cold storage retrieval
+    team_alias: Optional[str]
+    team_id: Optional[str]
 
 
 class StandardLoggingAdditionalHeaders(TypedDict, total=False):
@@ -2914,8 +2953,9 @@ all_litellm_params = (
         "api_key",
         "api_version",
         "prompt_id",
-        "provider_specific_header",
         "prompt_variables",
+        "litellm_system_prompt",
+        "provider_specific_header",
         "prompt_version",
         "api_base",
         "force_timeout",
@@ -3169,6 +3209,8 @@ class LlmProviders(str, Enum):
     POE = "poe"
     CHUTES = "chutes"
     XIAOMI_MIMO = "xiaomi_mimo"
+    LITELLM_AGENT = "litellm_agent"
+    CURSOR = "cursor"
 
 
 # Create a set of all provider values for quick lookup
@@ -3179,6 +3221,12 @@ OPENAI_COMPATIBLE_BATCH_AND_FILES_PROVIDERS: set[str] = {
     LlmProviders.OPENAI.value,
     LlmProviders.HOSTED_VLLM.value,
 }
+
+ListBatchesSupportedProvider = Literal["openai", "azure", "hosted_vllm", "vertex_ai"]
+
+LIST_BATCHES_SUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    get_args(ListBatchesSupportedProvider)
+)
 
 
 class SearchProviders(str, Enum):
@@ -3197,6 +3245,7 @@ class SearchProviders(str, Enum):
     FIRECRAWL = "firecrawl"
     SEARXNG = "searxng"
     LINKUP = "linkup"
+    DUCKDUCKGO = "duckduckgo"
 
 
 # Create a set of all search provider values for quick lookup
