@@ -44,6 +44,7 @@ guardrails:
 class SupportedGuardrailIntegrations(Enum):
     APORIA = "aporia"
     BEDROCK = "bedrock"
+    DYNAMOAI = "dynamoai"
     GUARDRAILS_AI = "guardrails_ai"
     LAKERA = "lakera"
     LAKERA_V2 = "lakera_v2"
@@ -52,6 +53,7 @@ class SupportedGuardrailIntegrations(Enum):
     HIDDENLAYER = "hiddenlayer"
     AIM = "aim"
     PANGEA = "pangea"
+    CROWDSTRIKE_AIDR = "crowdstrike_aidr"
     LASSO = "lasso"
     PILLAR = "pillar"
     GRAYSWAN = "grayswan"
@@ -77,6 +79,7 @@ class SupportedGuardrailIntegrations(Enum):
     SEMANTIC_GUARD = "semantic_guard"
     MCP_END_USER_PERMISSION = "mcp_end_user_permission"
     BLOCK_CODE_EXECUTION = "block_code_execution"
+    MCP_JWT_SIGNER = "mcp_jwt_signer"
 
 
 class Role(Enum):
@@ -697,6 +700,15 @@ class BaseLitellmParams(
         ),
     )
 
+    extra_headers: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Header names to forward from the client request to the guardrail (e.g. x-request-id). "
+            "Only these headers' values are sent; others may be omitted or sent as [present]. "
+            "Used by generic_guardrail_api (similar to MCP extra_headers)."
+        ),
+    )
+
     # Custom code guardrail params
     custom_code: Optional[str] = Field(
         default=None,
@@ -707,8 +719,10 @@ class BaseLitellmParams(
 
 
 class Mode(BaseModel):
-    tags: Dict[str, str] = Field(description="Tags for the guardrail mode")
-    default: Optional[str] = Field(
+    tags: Dict[str, Union[str, List[str]]] = Field(
+        description="Tags for the guardrail mode"
+    )
+    default: Optional[Union[str, List[str]]] = Field(
         default=None, description="Default mode when no tags match"
     )
 
