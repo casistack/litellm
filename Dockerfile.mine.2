@@ -95,6 +95,6 @@ EXPOSE 4000/tcp
 
 ENTRYPOINT ["litellm"]
 CMD ["--config", "/app/config/config.yaml", \
-     "--detailed_debug", \
      "--port", "4000", \
-     "--num_workers", "4"]
+     "--num_workers", "4", \
+     "--timeout_worker_healthcheck", "60"]
