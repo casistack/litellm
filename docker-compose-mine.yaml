@@ -3,10 +3,17 @@ services:
   litellm:
     build:
       context: .
-      dockerfile: Dockerfile.mine.2
-      args:
-        target: runtime
+      dockerfile: Dockerfile
     image: ghcr.io/berriai/litellm:${DOCKER_TAG:-main-latest}
+    command:
+      - --config
+      - /app/config/config.yaml
+      - --port
+      - "4000"
+      - --num_workers
+      - "4"
+      - --timeout_worker_healthcheck
+      - "60"
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:
