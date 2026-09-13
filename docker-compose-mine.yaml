@@ -41,11 +41,13 @@ services:
       REDIS_PASSWORD: "${REDIS_PASSWORD:-your_redis_password}"
     restart: unless-stopped
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   db:
-    image: postgres
+    image: postgres:16
     ports:
       - "6656:5432"
     restart: always
